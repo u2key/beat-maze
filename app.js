@@ -15,6 +15,7 @@ const ctx = canvas.getContext('2d');
 const startGameBtn = document.getElementById('start-game-btn');
 const livesDisplay = document.getElementById('lives-display');
 const scoreDisplay = document.getElementById('score-display');
+const joinOverlay = document.getElementById('join-overlay');
 
 // --- Global Rhythm Config ---
 const BPM = 140;
@@ -137,6 +138,7 @@ function initWebSocket() {
                 delete players[data.id];
                 delete otherPlayersPaths[data.id];
             } else if (data.type === 'startGame') {
+                if (activeMode !== 'game') switchTab('game');
                 handleStartGame(data.startDelay);
             } else if (data.type === 'hit') {
                 if (data.id !== localId) playEcho();
@@ -171,6 +173,29 @@ function switchTab(mode) {
     if (mode === 'game') drawGame(0);
 }
 
+// --- Audio Unlocker ---
+let audioUnlocked = false;
+function unlockAudioContext() {
+    if (audioUnlocked) return;
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') {
+        audioContext.resume().then(() => audioUnlocked = true);
+    } else {
+        audioUnlocked = true;
+    }
+    // Play silent sound to force unlock on mobile
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain); gain.connect(audioContext.destination);
+    osc.start(0); osc.stop(audioContext.currentTime + 0.001);
+}
+
+joinOverlay.addEventListener('pointerdown', () => {
+    unlockAudioContext();
+    joinOverlay.style.display = 'none';
+});
+
 function updateGameUI() {
     livesDisplay.textContent = '❤️'.repeat(lives) + '🖤'.repeat(3 - lives);
     scoreDisplay.textContent = `Score: ${score}`;
@@ -197,8 +222,7 @@ function stopAudio() {
 }
 
 function startCalib() {
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') audioContext.resume();
+    unlockAudioContext();
     isPlaying = true; currentNote = 0;
     startTime = audioContext.currentTime + 0.1;
     nextNoteTime = startTime;
@@ -209,8 +233,7 @@ function startCalib() {
 }
 
 function handleStartGame(startDelayMs) {
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') audioContext.resume();
+    unlockAudioContext();
     
     lives = 3; score = 0; updateGameUI();
     gameState = 'starting';
