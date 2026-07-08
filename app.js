@@ -121,7 +121,7 @@ function generatePlayerPath(spawnIndex) {
 // --- Init ---
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${window.location.host}`);
+    ws = new WebSocket(`${protocol}//${window.location.host}/beat-maze/`);
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
