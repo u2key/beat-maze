@@ -17,6 +17,56 @@ const hitResultEl = document.getElementById('hit-result');
 let lastDrawnNote = -1;
 let drawReqId;
 
+// --- WebSocket Setup ---
+let ws;
+function initWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${protocol}//${window.location.host}`);
+    
+    ws.onopen = () => {
+        console.log('Connected to server');
+    };
+    
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'hit') {
+                playEcho();
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    };
+}
+initWebSocket();
+
+function playEcho() {
+    // 視覚的エコー
+    const ring = document.createElement('div');
+    ring.className = 'echo-ring';
+    beatCircle.appendChild(ring);
+    setTimeout(() => {
+        ring.remove();
+    }, 500);
+
+    // 音響的エコー (他のプレイヤーの音)
+    if (audioContext && isPlaying) {
+        const osc = audioContext.createOscillator();
+        const envelope = audioContext.createGain();
+        osc.connect(envelope);
+        envelope.connect(audioContext.destination);
+        
+        osc.type = 'square';
+        osc.frequency.value = 600.0;
+        
+        envelope.gain.value = 0.3;
+        envelope.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.1);
+        
+        osc.start(audioContext.currentTime);
+        osc.stop(audioContext.currentTime + 0.1);
+    }
+}
+
 function nextNote() {
     const secondsPerBeat = 60.0 / bpm;
     nextNoteTime += secondsPerBeat;
@@ -151,6 +201,11 @@ document.addEventListener('keydown', (e) => {
 
             // ズレをミリ秒に変換
             const diffMs = Math.round(minDiff * 1000);
+            
+            // サーバーへ打鍵情報を送信
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'hit', diffMs }));
+            }
             
             // 判定結果の表示
             let judgment = '';
