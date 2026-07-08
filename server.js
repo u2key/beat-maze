@@ -7,58 +7,64 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Serve static files from the current directory
 app.use(express.static(path.join(__dirname)));
+
+const players = {};
+let nextSpawnIndex = 0;
+// Distinct vibrant colors for players
+const colors = ['#00e676', '#00b0ff', '#ff1744', '#ffea00', '#aa00ff', '#ff9100'];
 
 let sharedCombo = 0;
 
 wss.on('connection', (ws) => {
-    console.log('Client connected');
+    const id = Math.random().toString(36).substr(2, 9);
+    const color = colors[nextSpawnIndex % colors.length];
+    const spawnIndex = nextSpawnIndex++;
     
-    // Send initial combo
-    ws.send(JSON.stringify({ type: 'combo', value: sharedCombo }));
+    players[id] = { id, color, spawnIndex, score: 0, lives: 3 };
+    ws.id = id;
+
+    // Send initialization data to the new client
+    ws.send(JSON.stringify({ type: 'init', id, color, spawnIndex, players }));
+    
+    // Notify others
+    broadcast({ type: 'playerJoined', player: players[id] });
 
     ws.on('message', (message) => {
-        let parsedMessage;
-        try {
-            parsedMessage = JSON.parse(message);
-        } catch (e) {
-            console.error('Invalid JSON received');
-            return;
-        }
+        let data;
+        try { data = JSON.parse(message); } catch (e) { return; }
 
-        if (parsedMessage.type === 'hit') {
-            const diffMs = parsedMessage.diffMs;
-            
-            // 判定: Perfect(<=30ms)ならコンボ増加、Bad(>80ms)ならリセット
-            if (Math.abs(diffMs) <= 30) {
-                sharedCombo++;
-            } else if (Math.abs(diffMs) > 80) {
-                sharedCombo = 0;
-            }
+        if (data.type === 'hit') {
+            const diffMs = data.diffMs;
+            if (Math.abs(diffMs) <= 30) sharedCombo++;
+            else if (Math.abs(diffMs) > 120) sharedCombo = 0;
 
-            // 打鍵音(エコー)は他のクライアントにのみブロードキャスト
-            wss.clients.forEach((client) => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: 'hit', diffMs }));
-                }
-            });
+            if (data.score !== undefined) players[id].score = data.score;
+            if (data.lives !== undefined) players[id].lives = data.lives;
 
-            // コンボ数は全員にブロードキャスト
-            wss.clients.forEach((client) => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: 'combo', value: sharedCombo }));
-                }
-            });
+            broadcast({ type: 'hit', id, diffMs, combo: sharedCombo, score: data.score, lives: data.lives });
+        } else if (data.type === 'startRequest') {
+            // Give clients exactly 4000ms delay to orchestrate the zoom and wait
+            const startDelay = 4000; 
+            broadcast({ type: 'startGame', startDelay });
+        } else if (data.type === 'dead') {
+            players[id].lives = 0;
+            broadcast({ type: 'playerDead', id });
         }
     });
 
     ws.on('close', () => {
-        console.log('Client disconnected');
+        delete players[id];
+        broadcast({ type: 'playerLeft', id });
     });
 });
 
+function broadcast(msg) {
+    const str = JSON.stringify(msg);
+    wss.clients.forEach(c => {
+        if (c.readyState === WebSocket.OPEN) c.send(str);
+    });
+}
+
 const PORT = process.env.PORT || 25561;
-server.listen(PORT, () => {
-    console.log(`beat_echo server running on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`beat_echo multiplayer server running on port ${PORT}`));
