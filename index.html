@@ -41,12 +41,24 @@
         .beat-active {
             transform: scale(1.4);
         }
+        #hit-result {
+            margin-top: 20px;
+            margin-bottom: 30px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            min-height: 2rem;
+            text-align: center;
+        }
+        .perfect { color: #00e676; }
+        .good { color: #ffea00; }
+        .bad { color: #ff5252; }
     </style>
 </head>
 <body>
     <h1>beat_echo</h1>
     <p>Precise Web Audio API Metronome (120 BPM)</p>
     <div id="beat-circle"></div>
+    <div id="hit-result">Press Space to the beat!</div>
     <button id="start-btn">Start Metronome</button>
     <script src="app.js"></script>
 </body>

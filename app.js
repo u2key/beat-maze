@@ -11,7 +11,9 @@ let timerID;
 
 // 視覚的な同期のためのキュー
 const notesInQueue = []; // { note: currentNote, time: time }
+const scheduledBeats = []; // 判定用のビート時刻を保持 (過去/未来のジャストタイミング)
 const beatCircle = document.getElementById('beat-circle');
+const hitResultEl = document.getElementById('hit-result');
 let lastDrawnNote = -1;
 let drawReqId;
 
@@ -52,9 +54,16 @@ function scheduler() {
     // 次のインターバルまでに鳴らすべき音を全てスケジュールする
     while (nextNoteTime < audioContext.currentTime + scheduleAheadTime) {
         notesInQueue.push({ note: currentNote, time: nextNoteTime });
+        scheduledBeats.push(nextNoteTime);
         playClick(nextNoteTime);
         nextNote();
     }
+
+    // 古いビート情報を削除 (1秒以上前のもの)
+    while (scheduledBeats.length && scheduledBeats[0] < audioContext.currentTime - 1.0) {
+        scheduledBeats.shift();
+    }
+
     timerID = setTimeout(scheduler, lookahead);
 }
 
@@ -118,5 +127,48 @@ startBtn.addEventListener('click', () => {
         cancelAnimationFrame(drawReqId);
         beatCircle.style.backgroundColor = '#333';
         startBtn.textContent = 'Start Metronome';
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+        e.preventDefault(); // スペースキーによるスクロールを防止
+        
+        if (e.repeat) return; // 押しっぱなしによる連続発火を防止
+
+        if (isPlaying && audioContext) {
+            const hitTime = audioContext.currentTime;
+            
+            // 最も近いビート（ジャストタイミング）を探す
+            let minDiff = Infinity;
+            for (const beatTime of scheduledBeats) {
+                const diff = hitTime - beatTime;
+                if (Math.abs(diff) < Math.abs(minDiff)) {
+                    minDiff = diff;
+                }
+            }
+
+            if (minDiff === Infinity) return;
+
+            // ズレをミリ秒に変換
+            const diffMs = Math.round(minDiff * 1000);
+            
+            // 判定結果の表示
+            let judgment = '';
+            hitResultEl.className = ''; // クラスをリセット
+            
+            if (Math.abs(diffMs) <= 30) {
+                judgment = 'Perfect!';
+                hitResultEl.classList.add('perfect');
+            } else if (Math.abs(diffMs) <= 80) {
+                judgment = diffMs < 0 ? 'Early' : 'Late';
+                hitResultEl.classList.add('good');
+            } else {
+                judgment = diffMs < 0 ? 'Way Early' : 'Way Late';
+                hitResultEl.classList.add('bad');
+            }
+
+            const sign = diffMs > 0 ? '+' : '';
+            hitResultEl.textContent = `${judgment} (${sign}${diffMs} ms)`;
+        }
     }
 });
