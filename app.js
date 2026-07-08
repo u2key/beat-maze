@@ -249,6 +249,186 @@ function unlockAudio() {
     audioUnlocked = true;
 }
 
+// ========================================================================
+//  DYNAMIC MUSIC SYSTEM - Web Audio API based
+// ========================================================================
+let musicGainNode = null;
+let bassGainNode = null;
+let drumGainNode = null;
+let musicScheduler = null;
+let lastMusicBeat = -1;
+
+function initializeMusic() {
+    if (!audioContext) return;
+    
+    // Create gain nodes for volume control
+    if (!musicGainNode) {
+        musicGainNode = audioContext.createGain();
+        musicGainNode.connect(audioContext.destination);
+        musicGainNode.gain.value = 0.15;
+    }
+    if (!bassGainNode) {
+        bassGainNode = audioContext.createGain();
+        bassGainNode.connect(audioContext.destination);
+        bassGainNode.gain.value = 0.12;
+    }
+    if (!drumGainNode) {
+        drumGainNode = audioContext.createGain();
+        drumGainNode.connect(audioContext.destination);
+        drumGainNode.gain.value = 0.1;
+    }
+}
+
+function playMelodyNote(freq, duration, startTime) {
+    if (!audioContext) return;
+    
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    
+    osc.connect(env);
+    env.connect(musicGainNode);
+    
+    env.setValueAtTime(0, startTime);
+    env.linearRampToValueAtTime(0.3, startTime + 0.01);
+    env.exponentialRampToValueAtTime(0.01, startTime + duration * 0.8);
+    env.linearRampToValueAtTime(0, startTime + duration);
+    
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+}
+
+function playBassNote(freq, duration, startTime) {
+    if (!audioContext) return;
+    
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    
+    osc.connect(env);
+    env.connect(bassGainNode);
+    
+    env.setValueAtTime(0, startTime);
+    env.linearRampToValueAtTime(0.3, startTime + 0.02);
+    env.exponentialRampToValueAtTime(0.05, startTime + duration);
+    
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+}
+
+function playKickDrum(startTime) {
+    if (!audioContext) return;
+    
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.type = 'sine';
+    
+    osc.connect(env);
+    env.connect(drumGainNode);
+    
+    const kickDuration = 0.3;
+    osc.frequency.setValueAtTime(150, startTime);
+    osc.frequency.exponentialRampToValueAtTime(0.01, startTime + kickDuration);
+    
+    env.setValueAtTime(0.5, startTime);
+    env.exponentialRampToValueAtTime(0.01, startTime + kickDuration);
+    
+    osc.start(startTime);
+    osc.stop(startTime + kickDuration);
+}
+
+function playHiHat(startTime) {
+    if (!audioContext) return;
+    
+    const bufSize = audioContext.sampleRate * 0.1;
+    const buf = audioContext.createBuffer(1, bufSize, audioContext.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+    
+    const src = audioContext.createBufferSource();
+    const env = audioContext.createGain();
+    src.buffer = buf;
+    src.connect(env);
+    env.connect(drumGainNode);
+    
+    env.setValueAtTime(0.4, startTime);
+    env.exponentialRampToValueAtTime(0.01, startTime + 0.1);
+    
+    src.start(startTime);
+}
+
+// Frequency mappings for melody
+const NOTE_FREQS = {
+    'E3': 164.81, 'G3': 196.00, 'B3': 246.94,
+    'E4': 329.63, 'G4': 392.00, 'B4': 493.88,
+    'D5': 587.33, 'E5': 659.25, 'G5': 783.99, 'B5': 987.77,
+    'B1': 61.74, 'D2': 73.42, 'A1': 55.00, 'A2': 110.00,
+    'E2': 82.41, 'G2': 98.00, 'B2': 123.47,
+    'C4': 261.63, 'C5': 523.25
+};
+
+function scheduleBackgroundMusic() {
+    if (!isPlaying || !audioContext) return;
+    
+    musicScheduler = setInterval(() => {
+        if (!isPlaying) {
+            clearInterval(musicScheduler);
+            return;
+        }
+        
+        const currentBeat = timeToBeat(audioContext.currentTime, gameStartTime);
+        const beatFloor = Math.floor(currentBeat * 2) / 2;
+        
+        if (beatFloor > lastMusicBeat) {
+            lastMusicBeat = beatFloor;
+            
+            const bpm = getBPMAtBeat(currentBeat);
+            const beatTime = beatToTime(beatFloor, gameStartTime);
+            const noteDuration = (60.0 / bpm) * 0.8;
+            
+            // Get pattern based on current BPM
+            const sectionBeat = Math.floor(currentBeat) % 4;
+            
+            // Melody patterns
+            const melodyNotes = [
+                ['E4', 'G4', 'B4', 'D5'],
+                ['B4', 'G4', 'E4', 'D4'],
+                ['G4', 'B4', 'E5', 'G5'],
+                ['D5', 'E5', 'B4', 'G4']
+            ];
+            
+            // Bass notes
+            const bassNotes = ['E2', 'B1', 'D2', 'A1'];
+            
+            // Play melody
+            const melodyNote = melodyNotes[sectionBeat % melodyNotes.length][sectionBeat];
+            if (melodyNote && NOTE_FREQS[melodyNote]) {
+                playMelodyNote(NOTE_FREQS[melodyNote], noteDuration, beatTime);
+            }
+            
+            // Play bass
+            const bassNote = bassNotes[Math.floor(beatFloor) % bassNotes.length];
+            if (bassNote && NOTE_FREQS[bassNote]) {
+                playBassNote(NOTE_FREQS[bassNote], noteDuration * 2, beatTime);
+            }
+            
+            // Drums: Kick on beat 0 and 2, hihat on half beats
+            if (beatFloor % 1 === 0) {
+                playKickDrum(beatTime);
+            } else if (bpm > 120) {
+                playHiHat(beatTime);
+            }
+        }
+    }, 50);
+}
+
+function stopMusicPlayback() {
+    lastMusicBeat = -1;
+    if (musicScheduler) clearInterval(musicScheduler);
+}
+
 // Schedule metronome clicks. We schedule ahead in real time.
 let nextScheduledBeat = 0;
 let schedulerTimer = null;
@@ -383,7 +563,7 @@ function playClick(time, noteIndex) {
     osc.start(time); osc.stop(time + 0.03);
 }
 
-function playMelodyNote(time, beat) {
+function playClickSound(time, beat) {
     if (activeMode === 'calib') return;
     
     const step = Math.round(beat * 2);
@@ -606,6 +786,7 @@ retryBtn.addEventListener('click', () => {
 
 function handleStartGame(startDelayMs) {
     unlockAudio();
+    initializeMusic(); // Initialize music system
     gameoverOverlay.style.display = 'none';
     startBtn.style.display = 'none';
 
@@ -636,7 +817,8 @@ function handleStartGame(startDelayMs) {
     gameState = 'starting';
     isPlaying = true;
 
-    // Start scheduler and render
+    // Start music and scheduler
+    scheduleBackgroundMusic();
     scheduleAudio();
     if (drawReqId) cancelAnimationFrame(drawReqId);
     drawReqId = requestAnimationFrame(gameLoop);
@@ -644,6 +826,7 @@ function handleStartGame(startDelayMs) {
 
 function stopGame() {
     isPlaying = false;
+    stopMusicPlayback(); // Stop music when game ends
     clearTimeout(schedulerTimer);
     cancelAnimationFrame(drawReqId);
     drawReqId = null;
