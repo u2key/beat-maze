@@ -321,9 +321,138 @@ function playTurnSound() {
     osc.start(now); osc.stop(now + 0.1);
 }
 
+// --- Melody Data (8th note steps matching level beats) ---
+const MELODY = [
+    // Intro: Beats 0 - 4
+    57, 0, 60, 62, 64, 0, 62, 60,
+    // Shared Path starts at Beat 4
+    // Beat 4: Turn Right
+    69, 0, 72, 74,
+    // Beat 6: Turn Up
+    76, 0, 74, 72,
+    // Beat 8: Turn Left
+    69, 0,
+    // Beat 9: Turn Up
+    65, 0,
+    // Beat 10: Turn Right
+    62, 
+    // Beat 10.5: Turn Up
+    64,
+    // Beat 11: Turn Left
+    65, 0,
+    // Beat 12: Turn Up
+    69, 0, 72, 74,
+    // Beat 14: Turn Right
+    76,
+    // Beat 14.5: Turn Up
+    77,
+    // Beat 15: Turn Left
+    76,
+    // Beat 15.5: Turn Up
+    74,
+    // Beat 16: Turn Right (Long Segment)
+    72, 0, 69, 0, 72, 0, 76, 0,
+    // Beat 20: Turn Up (Long Segment)
+    81, 0, 76, 0, 81, 0, 79, 0,
+    // Beat 24: Turn Left
+    77, 0,
+    // Beat 25: Turn Down
+    76, 0,
+    // Beat 26: Turn Right
+    74, 0,
+    // Beat 27: Turn Up
+    76, 0,
+    // Beat 28: End
+    81, 0, 0, 0
+];
+
+function playClick(time, noteIndex) {
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.connect(env); env.connect(audioContext.destination);
+    
+    // Quarter note strong click, eighth note weak tick
+    if (noteIndex % 2 === 0) {
+        osc.frequency.value = (noteIndex === 0) ? 880.0 : 440.0;
+        env.gain.value = 0.5; // Slightly lower metronome volume so melody stands out
+    } else {
+        osc.frequency.value = 220.0;
+        env.gain.value = 0.1;
+    }
+    env.gain.exponentialRampToValueAtTime(0.001, time + 0.02);
+    osc.start(time); osc.stop(time + 0.03);
+}
+
+function playMelodyNote(time, beat) {
+    if (activeMode === 'calib') return;
+    
+    const step = Math.round(beat * 2);
+    if (step < 0 || step >= MELODY.length) return;
+    
+    const midi = MELODY[step];
+    if (!midi || midi === 0) return;
+    
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+    
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    
+    // Use warm triangle wave for the synth pluck melody
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    
+    osc.connect(env);
+    env.connect(audioContext.destination);
+    
+    env.gain.setValueAtTime(0, time);
+    env.gain.linearRampToValueAtTime(0.2, time + 0.005); // Rapid pluck attack
+    env.gain.exponentialRampToValueAtTime(0.001, time + 0.25); // Pluck decay
+    
+    osc.start(time);
+    osc.stop(time + 0.3);
+}
+
+function playEcho() {
+    if (activeMode === 'calib') {
+        const ring = document.createElement('div');
+        ring.className = 'echo-ring';
+        beatCircle.appendChild(ring);
+        setTimeout(() => ring.remove(), 600);
+    }
+    if (audioContext && isPlaying) {
+        const osc = audioContext.createOscillator();
+        const env = audioContext.createGain();
+        osc.connect(env); env.connect(audioContext.destination);
+        osc.type = 'square'; osc.frequency.value = 600.0;
+        env.gain.value = 0.2;
+        env.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.1);
+        osc.start(audioContext.currentTime); osc.stop(audioContext.currentTime + 0.1);
+    }
+}
+
+function nextNote() {
+    nextNoteTime += TICK_SEC;
+    currentNote = (currentNote + 1) % 8;
+}
+
+function scheduler() {
+    while (nextNoteTime < audioContext.currentTime + scheduleAheadTime) {
+        const globalBeat = Math.round((nextNoteTime - startTime) / TICK_SEC) * 0.5;
+        notesInQueue.push({ note: currentNote, time: nextNoteTime });
+        scheduledBeats.push({ time: nextNoteTime, beat: globalBeat });
+        
+        playClick(nextNoteTime, currentNote);
+        playMelodyNote(nextNoteTime, globalBeat);
+        nextNote();
+    }
+    while (scheduledBeats.length && scheduledBeats[0].time < audioContext.currentTime - 2.0) {
+        scheduledBeats.shift();
+    }
+    if (isPlaying) timerID = setTimeout(scheduler, lookahead);
+}
+
 // ========================================================================
 //  MULTIPLAYER (WebSocket)
-// ========================================================================
 let ws;
 let localId = null;
 let localColor = '#00e676';
@@ -332,7 +461,7 @@ let remotePlayers = {}; // id -> { color, spawnIndex, alive, currentBeat, trail 
 
 function initWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${location.host}`);
+    ws = new WebSocket(`${protocol}//${location.host}/beat-maze/`);
 
     ws.onmessage = (ev) => {
         try {
