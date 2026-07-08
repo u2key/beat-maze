@@ -138,15 +138,15 @@ function draw() {
         // ビートのタイミング
         beatCircle.classList.add('beat-active');
         if (drawNote === 0) {
-            beatCircle.style.backgroundColor = '#ff4081'; // 1拍目
+            beatCircle.style.background = 'radial-gradient(circle, #ff4081 0%, #c2185b 100%)'; // 1拍目
         } else {
-            beatCircle.style.backgroundColor = '#1e88e5'; // それ以外
+            beatCircle.style.background = 'radial-gradient(circle, #1e88e5 0%, #1565c0 100%)'; // それ以外
         }
         
         // 少し経ったら元に戻す
         setTimeout(() => {
             beatCircle.classList.remove('beat-active');
-            beatCircle.style.backgroundColor = '#333';
+            beatCircle.style.background = ''; // CSSのデフォルトに戻す
         }, 100);
 
         lastDrawnNote = drawNote;
@@ -177,13 +177,14 @@ startBtn.addEventListener('click', () => {
         lastDrawnNote = -1;
         scheduler();
         drawReqId = requestAnimationFrame(draw);
-        startBtn.textContent = 'Stop Metronome';
+        startBtn.textContent = 'STOP METRONOME';
     } else {
         isPlaying = false;
         clearTimeout(timerID);
         cancelAnimationFrame(drawReqId);
-        beatCircle.style.backgroundColor = '#333';
-        startBtn.textContent = 'Start Metronome';
+        beatCircle.style.background = '';
+        startBtn.textContent = 'START METRONOME';
+    }
 });
 
 document.addEventListener('keydown', (e) => {
