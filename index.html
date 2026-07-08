@@ -3,180 +3,143 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>beat_echo Prototype</title>
+    <title>beat_maze — Dancing Line Style</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Outfit', sans-serif;
-            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-            background-size: 400% 400%;
-            animation: gradientBG 15s ease infinite;
-            color: #ffffff;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
+            background: #0a0a1a;
+            color: #fff;
             overflow: hidden;
-            touch-action: manipulation; /* スマホでのダブルタップズーム防止 */
-        }
-        @keyframes gradientBG {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        h1 {
-            font-size: 2.5rem;
-            font-weight: 900;
-            background: linear-gradient(45deg, #00e676, #ffeb3b);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin: 15px 0 10px 0;
-            filter: drop-shadow(0 0 15px rgba(0, 230, 118, 0.4));
-        }
-        .tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            z-index: 20;
-        }
-        .tab-btn {
-            padding: 10px 20px;
-            font-size: 1rem;
-            background: rgba(255, 255, 255, 0.1);
-            border: 2px solid transparent;
-            border-radius: 20px;
-            color: white;
-            cursor: pointer;
-            font-family: 'Outfit', sans-serif;
-            font-weight: 700;
-            transition: all 0.3s;
-        }
-        .tab-btn.active {
-            background: rgba(30, 136, 229, 0.4);
-            border-color: #1e88e5;
-        }
-        .view {
-            display: none;
-            flex-direction: column;
-            align-items: center;
-            width: 100%;
-            flex: 1;
-        }
-        .view.active {
-            display: flex;
-        }
-        
-        /* Calibration UI */
-        #beat-circle {
-            width: 120px; height: 120px;
-            border-radius: 50%;
-            background: radial-gradient(circle, #2a2a4a 0%, #1a1a2e 100%);
-            box-shadow: 0 0 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(255,255,255,0.05);
-            margin: 20px;
-            transition: transform 0.05s ease-out, background 0.05s, box-shadow 0.05s;
-            position: relative; z-index: 10;
-        }
-        .beat-active {
-            transform: scale(1.3);
-            box-shadow: 0 0 50px rgba(30, 136, 229, 0.8), inset 0 0 20px rgba(255,255,255,0.2) !important;
-        }
-        .echo-ring {
-            position: absolute; top: -5px; left: -5px;
-            width: 130px; height: 130px; border-radius: 50%;
-            border: 5px solid #00e676; box-sizing: border-box;
-            animation: echoAnim 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
-            pointer-events: none; z-index: 5;
-        }
-        @keyframes echoAnim {
-            0% { transform: scale(1); opacity: 0.8; }
-            100% { transform: scale(3); opacity: 0; }
-        }
-        #hit-result {
-            font-size: 1.5rem; font-weight: 700; min-height: 2rem; margin: 10px 0;
-            text-transform: uppercase;
-        }
-        .perfect { color: #00e676; text-shadow: 0 0 10px rgba(0, 230, 118, 0.5); }
-        .good { color: #ffea00; text-shadow: 0 0 10px rgba(255, 234, 0, 0.5); }
-        .bad { color: #ff5252; text-shadow: 0 0 10px rgba(255, 82, 82, 0.5); }
-        
-        #combo-display {
-            font-size: 2rem; font-weight: 900;
-            background: linear-gradient(to right, #ff8a00, #e52e71);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            margin-bottom: 10px;
-        }
-        #offset-display { color: #b0bec5; font-size: 1.2rem; margin-bottom: 10px; }
-        
-        /* Game UI */
-        .game-header {
-            display: flex; justify-content: space-between; width: 320px;
-            font-size: 1.5rem; font-weight: bold; margin-bottom: 15px;
-            background: rgba(0,0,0,0.3); padding: 10px 20px; border-radius: 20px;
-        }
-        #game-canvas {
-            background-color: rgba(0,0,0,0.4);
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(255,255,255,0.05);
-            border: 2px solid rgba(255,255,255,0.1);
+            touch-action: manipulation;
+            height: 100vh;
+            display: flex; flex-direction: column; align-items: center;
         }
 
-        button.action-btn {
-            padding: 15px 40px; font-size: 1.2rem;
-            background: linear-gradient(45deg, #1e88e5, #ff4081);
-            color: white; border: none; border-radius: 50px; cursor: pointer;
-            font-family: 'Outfit', sans-serif; font-weight: 700;
-            text-transform: uppercase; letter-spacing: 2px;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
-            margin-top: auto; margin-bottom: 40px;
-            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-        }
-        button.action-btn:hover {
-            transform: translateY(-3px) scale(1.05);
-            box-shadow: 0 15px 30px rgba(255, 64, 129, 0.4);
-        }
-        
+        /* --- Overlay --- */
         #join-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: #0f0c29; z-index: 9999;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            cursor: pointer;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            background-size: 400% 400%; animation: gradBG 12s ease infinite;
+            z-index: 9999; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; cursor: pointer;
         }
-        #join-overlay h1 { font-size: 4rem; margin-bottom: 10px; }
-        #join-overlay p { font-size: 1.5rem; color: #00e676; font-weight: 700; animation: blink 1s infinite; }
-        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        @keyframes gradBG {
+            0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}
+        }
+        #join-overlay h1 {
+            font-size: 3.5rem; font-weight: 900;
+            background: linear-gradient(45deg, #00e676, #ffeb3b);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 20px rgba(0,230,118,0.5));
+        }
+        #join-overlay p {
+            font-size: 1.4rem; color: #00e676; font-weight: 700;
+            margin-top: 20px; animation: blink 1.2s infinite;
+        }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+        /* --- HUD --- */
+        #hud {
+            position: fixed; top: 0; left: 0; width: 100%; z-index: 100;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 15px 25px; pointer-events: none;
+        }
+        .hud-left, .hud-right { display: flex; gap: 15px; align-items: center; }
+        .hud-item {
+            background: rgba(0,0,0,0.5); border-radius: 12px;
+            padding: 8px 16px; font-weight: 700; font-size: 1.1rem;
+            backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
+        }
+        #score-display { color: #ffeb3b; }
+        #combo-display { color: #00e676; }
+        #progress-display { color: #b0bec5; }
+
+        /* --- Canvas --- */
+        #game-canvas {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        }
+
+        /* --- Start Button --- */
+        #start-game-btn {
+            position: fixed; bottom: 40px; z-index: 200;
+            padding: 18px 50px; font-size: 1.3rem;
+            font-family: 'Outfit', sans-serif; font-weight: 900;
+            background: linear-gradient(45deg, #1e88e5, #ff4081);
+            color: white; border: none; border-radius: 50px; cursor: pointer;
+            text-transform: uppercase; letter-spacing: 3px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: all 0.3s;
+        }
+        #start-game-btn:hover {
+            transform: translateY(-3px) scale(1.05);
+            box-shadow: 0 15px 40px rgba(255,64,129,0.5);
+        }
+
+        /* --- Game Over Overlay --- */
+        #gameover-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.75); z-index: 300;
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+        }
+        #gameover-overlay h2 {
+            font-size: 3.5rem; font-weight: 900; color: #ff5252;
+            text-shadow: 0 0 30px rgba(255,82,82,0.6);
+        }
+        #gameover-overlay .final-score {
+            font-size: 2rem; color: #ffeb3b; margin-top: 15px;
+        }
+        #gameover-overlay button {
+            margin-top: 30px; padding: 15px 40px; font-size: 1.2rem;
+            font-family: 'Outfit', sans-serif; font-weight: 700;
+            background: linear-gradient(45deg, #1e88e5, #00e676);
+            color: white; border: none; border-radius: 50px; cursor: pointer;
+            text-transform: uppercase; letter-spacing: 2px;
+        }
+
+        /* --- Players List --- */
+        #players-list {
+            position: fixed; top: 70px; right: 20px; z-index: 100;
+            display: flex; flex-direction: column; gap: 5px;
+        }
+        .player-tag {
+            display: flex; align-items: center; gap: 8px;
+            background: rgba(0,0,0,0.5); border-radius: 8px;
+            padding: 5px 12px; font-size: 0.85rem; font-weight: 700;
+            backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
+        }
+        .player-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+        }
     </style>
 </head>
 <body>
     <div id="join-overlay">
-        <h1>beat_echo</h1>
+        <h1>beat_maze</h1>
         <p>TAP TO JOIN</p>
     </div>
 
-    <h1>beat_echo</h1>
-    <div class="tabs">
-        <button id="btn-tab-game" class="tab-btn active">Maze Game</button>
-        <button id="btn-tab-calib" class="tab-btn">Delay Calib</button>
-    </div>
+    <canvas id="game-canvas"></canvas>
 
-    <!-- Maze Game View -->
-    <div id="view-game" class="view active">
-        <div class="game-header">
-            <div id="lives-display">❤️❤️❤️</div>
-            <div id="score-display">Score: 0</div>
+    <div id="hud">
+        <div class="hud-left">
+            <div class="hud-item" id="score-display">Score: 0</div>
+            <div class="hud-item" id="combo-display">Combo: 0</div>
         </div>
-        <canvas id="game-canvas" width="350" height="450"></canvas>
-        <button id="start-game-btn" class="action-btn">START GAME</button>
+        <div class="hud-right">
+            <div class="hud-item" id="progress-display">0%</div>
+        </div>
     </div>
 
-    <!-- Calibration View -->
-    <div id="view-calib" class="view">
-        <div id="combo-display">Shared Combo: <span id="combo-count">0</span></div>
-        <div id="offset-display">Avg Delay: 0 ms</div>
-        <p style="color:#b0bec5;">Tap/Space perfectly on the beat to auto-calibrate</p>
-        <div id="beat-circle"></div>
-        <div id="hit-result"></div>
-        <button id="start-btn" class="action-btn">START CALIB</button>
+    <div id="players-list"></div>
+
+    <button id="start-game-btn">START</button>
+
+    <div id="gameover-overlay">
+        <h2>GAME OVER</h2>
+        <div class="final-score" id="final-score">Score: 0</div>
+        <button id="retry-btn">RETRY</button>
     </div>
 
     <script src="app.js"></script>
