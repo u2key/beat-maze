@@ -2,11 +2,10 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>beat_echo Prototype</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
-
         body {
             font-family: 'Outfit', sans-serif;
             background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
@@ -16,129 +15,155 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
             height: 100vh;
             margin: 0;
             overflow: hidden;
+            touch-action: manipulation; /* スマホでのダブルタップズーム防止 */
         }
-
         @keyframes gradientBG {
             0% { background-position: 0% 50%; }
             50% { background-position: 100% 50%; }
             100% { background-position: 0% 50%; }
         }
-
         h1 {
-            font-size: 4rem;
+            font-size: 2.5rem;
             font-weight: 900;
             background: linear-gradient(45deg, #00e676, #ffeb3b);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            margin-bottom: 0.5rem;
+            margin: 15px 0 10px 0;
             filter: drop-shadow(0 0 15px rgba(0, 230, 118, 0.4));
         }
-
-        p {
-            color: #b0bec5;
-            letter-spacing: 2px;
-            font-weight: 400;
-            margin-top: 0;
-            margin-bottom: 2rem;
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            z-index: 20;
         }
-
-        button {
-            padding: 15px 40px;
-            font-size: 1.2rem;
-            font-family: 'Outfit', sans-serif;
-            background: linear-gradient(45deg, #1e88e5, #ff4081);
+        .tab-btn {
+            padding: 10px 20px;
+            font-size: 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid transparent;
+            border-radius: 20px;
             color: white;
-            border: none;
-            border-radius: 50px;
             cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            font-family: 'Outfit', sans-serif;
             font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            transition: all 0.3s;
         }
-        button:hover {
-            transform: translateY(-3px) scale(1.05);
-            box-shadow: 0 15px 30px rgba(255, 64, 129, 0.4);
+        .tab-btn.active {
+            background: rgba(30, 136, 229, 0.4);
+            border-color: #1e88e5;
         }
-        button:active {
-            transform: translateY(1px);
+        .view {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            flex: 1;
         }
+        .view.active {
+            display: flex;
+        }
+        
+        /* Calibration UI */
         #beat-circle {
-            width: 120px;
-            height: 120px;
+            width: 120px; height: 120px;
             border-radius: 50%;
             background: radial-gradient(circle, #2a2a4a 0%, #1a1a2e 100%);
             box-shadow: 0 0 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(255,255,255,0.05);
-            margin: 40px;
+            margin: 20px;
             transition: transform 0.05s ease-out, background 0.05s, box-shadow 0.05s;
-            position: relative;
-            z-index: 10;
+            position: relative; z-index: 10;
         }
         .beat-active {
             transform: scale(1.3);
             box-shadow: 0 0 50px rgba(30, 136, 229, 0.8), inset 0 0 20px rgba(255,255,255,0.2) !important;
         }
         .echo-ring {
-            position: absolute;
-            top: -5px;
-            left: -5px;
-            width: 130px;
-            height: 130px;
-            border-radius: 50%;
-            border: 5px solid #00e676;
-            box-sizing: border-box;
-            opacity: 1;
-            transform: scale(1);
+            position: absolute; top: -5px; left: -5px;
+            width: 130px; height: 130px; border-radius: 50%;
+            border: 5px solid #00e676; box-sizing: border-box;
             animation: echoAnim 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
-            pointer-events: none;
-            z-index: 5;
+            pointer-events: none; z-index: 5;
         }
         @keyframes echoAnim {
             0% { transform: scale(1); opacity: 0.8; }
             100% { transform: scale(3); opacity: 0; }
         }
         #hit-result {
-            margin-top: 10px;
-            margin-bottom: 30px;
-            font-size: 1.8rem;
-            font-weight: 700;
-            min-height: 2.5rem;
-            text-align: center;
-            letter-spacing: 1px;
+            font-size: 1.5rem; font-weight: 700; min-height: 2rem; margin: 10px 0;
             text-transform: uppercase;
         }
         .perfect { color: #00e676; text-shadow: 0 0 10px rgba(0, 230, 118, 0.5); }
         .good { color: #ffea00; text-shadow: 0 0 10px rgba(255, 234, 0, 0.5); }
         .bad { color: #ff5252; text-shadow: 0 0 10px rgba(255, 82, 82, 0.5); }
+        
         #combo-display {
-            font-size: 2.5rem;
-            font-weight: 900;
+            font-size: 2rem; font-weight: 900;
             background: linear-gradient(to right, #ff8a00, #e52e71);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
             margin-bottom: 10px;
-            filter: drop-shadow(0 0 10px rgba(229, 46, 113, 0.4));
-            text-transform: uppercase;
-            letter-spacing: 2px;
         }
-        #combo-count {
-            display: inline-block;
-            transition: transform 0.1s;
+        #offset-display { color: #b0bec5; font-size: 1.2rem; margin-bottom: 10px; }
+        
+        /* Game UI */
+        .game-header {
+            display: flex; justify-content: space-between; width: 320px;
+            font-size: 1.5rem; font-weight: bold; margin-bottom: 15px;
+            background: rgba(0,0,0,0.3); padding: 10px 20px; border-radius: 20px;
+        }
+        #game-canvas {
+            background-color: rgba(0,0,0,0.4);
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(255,255,255,0.05);
+            border: 2px solid rgba(255,255,255,0.1);
+        }
+
+        button.action-btn {
+            padding: 15px 40px; font-size: 1.2rem;
+            background: linear-gradient(45deg, #1e88e5, #ff4081);
+            color: white; border: none; border-radius: 50px; cursor: pointer;
+            font-family: 'Outfit', sans-serif; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 2px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            margin-top: auto; margin-bottom: 40px;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+        button.action-btn:hover {
+            transform: translateY(-3px) scale(1.05);
+            box-shadow: 0 15px 30px rgba(255, 64, 129, 0.4);
         }
     </style>
 </head>
 <body>
     <h1>beat_echo</h1>
-    <div id="combo-display">Shared Combo: <span id="combo-count">0</span></div>
-    <p>Precise Web Audio API Metronome (120 BPM)</p>
-    <div id="beat-circle"></div>
-    <div id="hit-result">Press Space to the beat!</div>
-    <button id="start-btn">Start Metronome</button>
+    <div class="tabs">
+        <button id="btn-tab-game" class="tab-btn active">Maze Game</button>
+        <button id="btn-tab-calib" class="tab-btn">Delay Calib</button>
+    </div>
+
+    <!-- Maze Game View -->
+    <div id="view-game" class="view active">
+        <div class="game-header">
+            <div id="lives-display">❤️❤️❤️</div>
+            <div id="score-display">Score: 0</div>
+        </div>
+        <canvas id="game-canvas" width="350" height="450"></canvas>
+        <button id="start-game-btn" class="action-btn">START GAME</button>
+    </div>
+
+    <!-- Calibration View -->
+    <div id="view-calib" class="view">
+        <div id="combo-display">Shared Combo: <span id="combo-count">0</span></div>
+        <div id="offset-display">Avg Delay: 0 ms</div>
+        <p style="color:#b0bec5;">Tap/Space perfectly on the beat to auto-calibrate</p>
+        <div id="beat-circle"></div>
+        <div id="hit-result"></div>
+        <button id="start-btn" class="action-btn">START CALIB</button>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>
