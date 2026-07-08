@@ -1,542 +1,888 @@
-// --- DOM Elements ---
-const viewCalib = document.getElementById('view-calib');
-const viewGame = document.getElementById('view-game');
-const btnTabCalib = document.getElementById('btn-tab-calib');
-const btnTabGame = document.getElementById('btn-tab-game');
+// ========================================================================
+//  beat_maze — Dancing Line Style Rhythm Game Engine
+//  Core mechanic: Line auto-advances. Tap to turn 90°. Walls kill you.
+// ========================================================================
 
-const beatCircle = document.getElementById('beat-circle');
-const hitResultEl = document.getElementById('hit-result');
-const comboCountEl = document.getElementById('combo-count');
-const offsetDisplay = document.getElementById('offset-display');
-const startBtn = document.getElementById('start-btn');
-
+// --- DOM ---
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
-const startGameBtn = document.getElementById('start-game-btn');
-const livesDisplay = document.getElementById('lives-display');
-const scoreDisplay = document.getElementById('score-display');
 const joinOverlay = document.getElementById('join-overlay');
+const startBtn = document.getElementById('start-game-btn');
+const retryBtn = document.getElementById('retry-btn');
+const gameoverOverlay = document.getElementById('gameover-overlay');
+const scoreDisplay = document.getElementById('score-display');
+const comboDisplay = document.getElementById('combo-display');
+const progressDisplay = document.getElementById('progress-display');
+const finalScoreEl = document.getElementById('final-score');
+const playersList = document.getElementById('players-list');
 
-// --- Global Rhythm Config ---
-const BPM = 140;
-const QUARTER_NOTE_SEC = 60.0 / BPM;
-const TICK_SEC = QUARTER_NOTE_SEC / 2; // 8th note scheduling
-const SPEED = 140; // Pixels per beat
+// --- Canvas sizing ---
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
 
-// --- Global State ---
-let activeMode = 'game'; 
-let audioContext;
-let isPlaying = false;
-let currentNote = 0;
-let nextNoteTime = 0.0;
-const lookahead = 25.0;
-const scheduleAheadTime = 0.1;
-let timerID;
-let startTime = 0;
-let drawReqId;
+// ========================================================================
+//  TRACK DEFINITION
+//  Each segment: { beats: duration_in_beats, dir: 0|1 }
+//  dir 0 = "primary direction" (right), dir 1 = "secondary direction" (up)
+//  The line always moves; a tap toggles between dir 0 and dir 1.
+//  Walls are auto-generated along the correct path.
+// ========================================================================
 
-// WebSocket Sync & Multiplayer
-let ws;
-let sharedCombo = 0;
-let localId = null;
-let localPlayer = null;
-let players = {};
-let otherPlayersPaths = {};
-
-// Synchronization
-const scheduledBeats = [];
-const notesInQueue = [];
-let lastDrawnNote = -1;
-let calibrationOffsetMs = 0;
-const recentOffsets = [];
-
-// Game State
-let gameState = 'idle'; // idle, starting, playing, over
-let lives = 3;
-let score = 0;
-let pathNodes = []; 
-let hitEffects = []; 
-let zoomAnimStart = 0;
-
-// --- Track Data (Rich variations) ---
-const sharedPath = [
-    { interval: 2, dirX: 1, dirY: 0 },   // Beat 4->6 (RIGHT)
-    { interval: 2, dirX: 0, dirY: -1 },  // Beat 6->8 (UP)
-    { interval: 1, dirX: -1, dirY: 0 },  // Beat 8->9 (LEFT, faster)
-    { interval: 1, dirX: 0, dirY: -1 },  // Beat 9->10 (UP)
-    { interval: 0.5, dirX: 1, dirY: 0 }, // 10->10.5 (RIGHT, rapid 8th)
-    { interval: 0.5, dirX: 0, dirY: -1 },// 10.5->11 (UP)
-    { interval: 1, dirX: -1, dirY: 0 },  // 11->12 (LEFT)
-    { interval: 2, dirX: 0, dirY: -1 },  // 12->14 (UP)
-    { interval: 0.5, dirX: 1, dirY: 0 }, // 14->14.5
-    { interval: 0.5, dirX: 0, dirY: -1 },// 14.5->15
-    { interval: 0.5, dirX: -1, dirY: 0 },// 15->15.5
-    { interval: 0.5, dirX: 0, dirY: -1 },// 15.5->16
-    { interval: 4, dirX: 1, dirY: 0 },   // 16->20 (Long pause, steady path)
-    { interval: 4, dirX: 0, dirY: -1 },  // 20->24
-    { interval: 1, dirX: -1, dirY: 0 },  
-    { interval: 1, dirX: 0, dirY: 1 },   // DOWN!
-    { interval: 1, dirX: 1, dirY: 0 },
-    { interval: 1, dirX: 0, dirY: -1 }
+// Direction vectors: dir0 = right (+x), dir1 = up (-y)
+const DIR_VECS = [
+    { x: 1, y: 0 },   // dir 0: right
+    { x: 0, y: -1 },  // dir 1: up
 ];
 
-function generatePlayerPath(spawnIndex) {
-    const laneOffsets = [-15, 15, -30, 30, -45, 45];
-    const offsetX = laneOffsets[spawnIndex % laneOffsets.length];
-    
-    // At beat 4, all join the shared progression but retain their offset
-    const beat4X = offsetX;
-    const beat4Y = -4 * SPEED;
-    let path = [];
-    
-    // Initial approaching segment to converge at beat 4
-    if (spawnIndex % 4 === 0) {
-        path.push({ beat: 0, x: beat4X - 4*SPEED, y: beat4Y, dirX: 1, dirY: 0, turned: true, missed: false });
-    } else if (spawnIndex % 4 === 1) {
-        path.push({ beat: 0, x: beat4X + 4*SPEED, y: beat4Y, dirX: -1, dirY: 0, turned: true, missed: false });
-    } else if (spawnIndex % 4 === 2) {
-        path.push({ beat: 0, x: beat4X, y: beat4Y + 4*SPEED, dirX: 0, dirY: -1, turned: true, missed: false });
-    } else {
-        path.push({ beat: 0, x: beat4X, y: beat4Y - 4*SPEED, dirX: 0, dirY: 1, turned: true, missed: false });
+// BPM changes over the track for variety
+const BPM_SCHEDULE = [
+    { beat: 0,  bpm: 100 },
+    { beat: 16, bpm: 120 },
+    { beat: 32, bpm: 140 },
+    { beat: 48, bpm: 160 },
+    { beat: 56, bpm: 120 },
+    { beat: 64, bpm: 140 },
+    { beat: 80, bpm: 100 },
+];
+
+// Track segments: the correct path the line should follow.
+// Each segment says "go in direction X for N beats".
+// A turn point is where direction changes.
+const TRACK_SEGMENTS = [
+    // === Intro: steady, slow (BPM 100) ===
+    { beats: 4, dir: 0 },   // right 4
+    { beats: 4, dir: 1 },   // up 4
+    { beats: 4, dir: 0 },   // right 4
+    { beats: 4, dir: 1 },   // up 4
+
+    // === Section 2: speed up (BPM 120) ===
+    { beats: 2, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 2, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 2, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 2, dir: 0 },
+    { beats: 2, dir: 1 },
+
+    // === Section 3: rapid fire (BPM 140) ===
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 3, dir: 1 },   // surprise long
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 2, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+
+    // === Section 4: intense (BPM 160) ===
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+
+    // === Section 5: cool-down (BPM 120) ===
+    { beats: 4, dir: 0 },
+    { beats: 4, dir: 1 },
+
+    // === Section 6: mixed (BPM 140) ===
+    { beats: 2, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 2, dir: 0 },
+    { beats: 1, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 2, dir: 1 },
+    { beats: 1, dir: 0 },
+    { beats: 1, dir: 1 },
+
+    // === Outro: slow down (BPM 100) ===
+    { beats: 4, dir: 0 },
+    { beats: 4, dir: 1 },
+    { beats: 4, dir: 0 },
+    { beats: 4, dir: 1 },
+];
+
+// ========================================================================
+//  PRE-COMPUTE TRACK GEOMETRY
+//  turnPoints[i] = { beat, x, y, newDir }
+//  Each turn point is where the direction changes.
+// ========================================================================
+const PIXELS_PER_BEAT = 60; // How many pixels the line moves per beat
+const WALL_HALF_WIDTH = 25; // Half-width of the corridor
+
+let turnPoints = [];     // { beat, x, y, newDir }
+let totalBeats = 0;
+let wallSegments = [];   // { x1,y1, x2,y2 } for collision detection
+
+function buildTrackGeometry(offsetX, offsetY) {
+    const points = [];
+    let x = offsetX, y = offsetY, beat = 0;
+
+    // First turn point is the start
+    points.push({ beat: 0, x, y, newDir: TRACK_SEGMENTS[0].dir });
+
+    for (let i = 0; i < TRACK_SEGMENTS.length; i++) {
+        const seg = TRACK_SEGMENTS[i];
+        const dist = seg.beats * PIXELS_PER_BEAT;
+        const dv = DIR_VECS[seg.dir];
+        x += dv.x * dist;
+        y += dv.y * dist;
+        beat += seg.beats;
+
+        const nextDir = (i + 1 < TRACK_SEGMENTS.length) ? TRACK_SEGMENTS[i + 1].dir : seg.dir;
+        points.push({ beat, x, y, newDir: nextDir });
     }
-    
-    // Join node at beat 4
-    path.push({ beat: 4, x: beat4X, y: beat4Y, dirX: sharedPath[0].dirX, dirY: sharedPath[0].dirY, turned: false, missed: false });
-    
-    let curX = beat4X; let curY = beat4Y; let curBeat = 4;
-    for (let i = 0; i < sharedPath.length; i++) {
-        const seg = sharedPath[i];
-        const dist = seg.interval * SPEED;
-        curX += seg.dirX * dist;
-        curY += seg.dirY * dist;
-        curBeat += seg.interval;
-        
-        const nextDirX = (i + 1 < sharedPath.length) ? sharedPath[i+1].dirX : seg.dirX;
-        const nextDirY = (i + 1 < sharedPath.length) ? sharedPath[i+1].dirY : seg.dirY;
-        path.push({ beat: curBeat, x: curX, y: curY, dirX: nextDirX, dirY: nextDirY, turned: false, missed: false });
-    }
-    return path;
+
+    return { points, totalBeats: beat };
 }
 
-// --- Init ---
+function buildWalls(points) {
+    const walls = [];
+    const W = WALL_HALF_WIDTH;
+
+    for (let i = 0; i < points.length - 1; i++) {
+        const p0 = points[i];
+        const p1 = points[i + 1];
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len === 0) continue;
+
+        // Normal perpendicular to segment
+        const nx = -dy / len;
+        const ny = dx / len;
+
+        // Two wall lines on each side of the corridor
+        walls.push({
+            x1: p0.x + nx * W, y1: p0.y + ny * W,
+            x2: p1.x + nx * W, y2: p1.y + ny * W,
+        });
+        walls.push({
+            x1: p0.x - nx * W, y1: p0.y - ny * W,
+            x2: p1.x - nx * W, y2: p1.y - ny * W,
+        });
+    }
+    return walls;
+}
+
+// ========================================================================
+//  BPM → time mapping
+//  Since BPM changes mid-track, we need beat → audioTime conversion.
+// ========================================================================
+function beatToTime(beat, gameStartTime) {
+    let time = gameStartTime;
+    let prevBeat = 0;
+    for (let i = 0; i < BPM_SCHEDULE.length; i++) {
+        const curr = BPM_SCHEDULE[i];
+        const nextBeat = (i + 1 < BPM_SCHEDULE.length) ? BPM_SCHEDULE[i + 1].beat : Infinity;
+        const segEnd = Math.min(beat, nextBeat);
+        if (segEnd > prevBeat) {
+            const dur = (segEnd - Math.max(prevBeat, curr.beat)) * (60.0 / curr.bpm);
+            time += dur;
+        }
+        prevBeat = nextBeat;
+        if (beat <= nextBeat) break;
+    }
+    return time;
+}
+
+function timeToBeat(audioTime, gameStartTime) {
+    let elapsed = audioTime - gameStartTime;
+    if (elapsed <= 0) return 0;
+    let beat = 0;
+    for (let i = 0; i < BPM_SCHEDULE.length; i++) {
+        const curr = BPM_SCHEDULE[i];
+        const nextBeat = (i + 1 < BPM_SCHEDULE.length) ? BPM_SCHEDULE[i + 1].beat : Infinity;
+        const segBeats = nextBeat - curr.beat;
+        const secPerBeat = 60.0 / curr.bpm;
+        const segDuration = segBeats * secPerBeat;
+
+        if (elapsed <= segDuration || nextBeat === Infinity) {
+            beat = curr.beat + elapsed / secPerBeat;
+            break;
+        }
+        elapsed -= segDuration;
+    }
+    return beat;
+}
+
+function getBPMAtBeat(beat) {
+    let bpm = BPM_SCHEDULE[0].bpm;
+    for (const s of BPM_SCHEDULE) {
+        if (beat >= s.beat) bpm = s.bpm;
+    }
+    return bpm;
+}
+
+// ========================================================================
+//  AUDIO
+// ========================================================================
+let audioContext;
+let audioUnlocked = false;
+
+function unlockAudio() {
+    if (audioUnlocked) return;
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') audioContext.resume();
+    // Silent buffer to force unlock on iOS
+    const b = audioContext.createBuffer(1, 1, 22050);
+    const s = audioContext.createBufferSource();
+    s.buffer = b; s.connect(audioContext.destination); s.start(0);
+    audioUnlocked = true;
+}
+
+// Schedule metronome clicks. We schedule ahead in real time.
+let nextScheduledBeat = 0;
+let schedulerTimer = null;
+const SCHEDULE_AHEAD_SEC = 0.15;
+const SCHEDULER_INTERVAL_MS = 25;
+
+function scheduleAudio() {
+    if (!audioContext || !isPlaying) return;
+    const now = audioContext.currentTime;
+
+    while (true) {
+        const noteTime = beatToTime(nextScheduledBeat, gameStartTime);
+        if (noteTime > now + SCHEDULE_AHEAD_SEC) break;
+        if (noteTime >= now - 0.01) { // don't play notes far in the past
+            playMetronomeClick(noteTime, nextScheduledBeat);
+        }
+        // Advance by the smallest rhythmic unit
+        const bpm = getBPMAtBeat(nextScheduledBeat);
+        nextScheduledBeat += 1; // one beat
+    }
+    schedulerTimer = setTimeout(scheduleAudio, SCHEDULER_INTERVAL_MS);
+}
+
+function playMetronomeClick(time, beat) {
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.connect(env); env.connect(audioContext.destination);
+
+    // Check if this beat is a turn point
+    const isTurnBeat = turnPoints.some(tp => Math.abs(tp.beat - beat) < 0.01 && tp.beat > 0);
+
+    if (beat % 4 === 0) {
+        osc.frequency.value = 880; env.gain.value = 0.6;
+    } else if (isTurnBeat) {
+        osc.frequency.value = 660; env.gain.value = 0.5;
+        osc.type = 'triangle';
+    } else {
+        osc.frequency.value = 440; env.gain.value = 0.15;
+    }
+    env.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
+    osc.start(time); osc.stop(time + 0.05);
+}
+
+function playCrashSound() {
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    // Noise burst for crash
+    const bufSize = audioContext.sampleRate * 0.15;
+    const buf = audioContext.createBuffer(1, bufSize, audioContext.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.5;
+    const src = audioContext.createBufferSource();
+    const env = audioContext.createGain();
+    src.buffer = buf; src.connect(env); env.connect(audioContext.destination);
+    env.gain.value = 0.7;
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    src.start(now);
+}
+
+function playTurnSound() {
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    const osc = audioContext.createOscillator();
+    const env = audioContext.createGain();
+    osc.connect(env); env.connect(audioContext.destination);
+    osc.type = 'sine'; osc.frequency.value = 1200;
+    osc.frequency.exponentialRampToValueAtTime(800, now + 0.06);
+    env.gain.value = 0.3;
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.start(now); osc.stop(now + 0.1);
+}
+
+// ========================================================================
+//  MULTIPLAYER (WebSocket)
+// ========================================================================
+let ws;
+let localId = null;
+let localColor = '#00e676';
+let localSpawnIndex = 0;
+let remotePlayers = {}; // id -> { color, spawnIndex, alive, currentBeat, trail }
+
 function initWebSocket() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${window.location.host}/beat-maze/`);
-    ws.onmessage = (event) => {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${protocol}//${location.host}`);
+
+    ws.onmessage = (ev) => {
         try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'init') {
-                localId = data.id;
-                players = data.players;
-                localPlayer = players[localId];
-            } else if (data.type === 'playerJoined') {
-                players[data.player.id] = data.player;
-                if (gameState === 'starting' || gameState === 'playing') {
-                    otherPlayersPaths[data.player.id] = generatePlayerPath(data.player.spawnIndex);
-                }
-            } else if (data.type === 'playerLeft') {
-                delete players[data.id];
-                delete otherPlayersPaths[data.id];
-            } else if (data.type === 'startGame') {
-                if (activeMode !== 'game') switchTab('game');
-                handleStartGame(data.startDelay);
-            } else if (data.type === 'hit') {
-                if (data.id !== localId) playEcho();
-                if (data.combo !== undefined) {
-                    sharedCombo = data.combo;
-                    comboCountEl.textContent = sharedCombo;
-                    comboCountEl.style.transform = 'scale(1.5)';
-                    setTimeout(() => comboCountEl.style.transform = 'scale(1)', 100);
-                }
-                if (players[data.id]) {
-                    players[data.id].score = data.score;
-                    players[data.id].lives = data.lives;
-                }
-            } else if (data.type === 'playerDead') {
-                if (players[data.id]) players[data.id].lives = 0;
+            const data = JSON.parse(ev.data);
+            switch (data.type) {
+                case 'init':
+                    localId = data.id;
+                    localColor = data.color;
+                    localSpawnIndex = data.spawnIndex;
+                    // Populate remote players
+                    for (const pid in data.players) {
+                        if (pid !== localId) {
+                            remotePlayers[pid] = {
+                                ...data.players[pid],
+                                alive: true, currentBeat: 0, trail: [],
+                                turnIndex: 0, currentDir: 0,
+                            };
+                        }
+                    }
+                    updatePlayersList();
+                    break;
+                case 'playerJoined':
+                    if (data.player.id !== localId) {
+                        remotePlayers[data.player.id] = {
+                            ...data.player,
+                            alive: true, currentBeat: 0, trail: [],
+                            turnIndex: 0, currentDir: 0,
+                        };
+                        updatePlayersList();
+                    }
+                    break;
+                case 'playerLeft':
+                    delete remotePlayers[data.id];
+                    updatePlayersList();
+                    break;
+                case 'startGame':
+                    handleStartGame(data.startDelay);
+                    break;
+                case 'playerUpdate':
+                    if (data.id !== localId && remotePlayers[data.id]) {
+                        const rp = remotePlayers[data.id];
+                        rp.currentBeat = data.beat;
+                        rp.alive = data.alive;
+                        rp.currentDir = data.dir;
+                        rp.turnIndex = data.turnIndex;
+                        if (data.trail) rp.trail = data.trail;
+                    }
+                    break;
+                case 'playerDead':
+                    if (remotePlayers[data.id]) remotePlayers[data.id].alive = false;
+                    break;
             }
-        } catch(e) {}
+        } catch (e) { console.error(e); }
     };
 }
 initWebSocket();
 
-// --- Tab & UI ---
-btnTabCalib.addEventListener('click', () => switchTab('calib'));
-btnTabGame.addEventListener('click', () => switchTab('game'));
-function switchTab(mode) {
-    if (isPlaying) stopAudio();
-    activeMode = mode;
-    btnTabCalib.classList.toggle('active', mode === 'calib');
-    btnTabGame.classList.toggle('active', mode === 'game');
-    viewCalib.classList.toggle('active', mode === 'calib');
-    viewGame.classList.toggle('active', mode === 'game');
-    if (mode === 'game') drawGame(0);
+function updatePlayersList() {
+    playersList.innerHTML = '';
+    // Local
+    const local = document.createElement('div');
+    local.className = 'player-tag';
+    local.innerHTML = `<div class="player-dot" style="background:${localColor}"></div>You`;
+    playersList.appendChild(local);
+    // Remotes
+    for (const id in remotePlayers) {
+        const rp = remotePlayers[id];
+        const el = document.createElement('div');
+        el.className = 'player-tag';
+        el.innerHTML = `<div class="player-dot" style="background:${rp.color}"></div>P${rp.spawnIndex + 1}`;
+        playersList.appendChild(el);
+    }
 }
 
-// --- Audio Unlocker ---
-let audioUnlocked = false;
-function unlockAudioContext() {
-    if (audioUnlocked) return;
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') {
-        audioContext.resume().then(() => audioUnlocked = true);
-    } else {
-        audioUnlocked = true;
-    }
-    // Play silent sound to force unlock on mobile
-    const osc = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    gain.gain.value = 0;
-    osc.connect(gain); gain.connect(audioContext.destination);
-    osc.start(0); osc.stop(audioContext.currentTime + 0.001);
+function broadcastState() {
+    if (!ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({
+        type: 'playerUpdate',
+        beat: currentBeat,
+        alive: alive,
+        dir: currentDir,
+        turnIndex: turnIndex,
+        trail: trail.slice(-50), // send recent trail
+    }));
 }
+
+// ========================================================================
+//  GAME STATE
+// ========================================================================
+let gameState = 'idle'; // idle | starting | playing | dead
+let isPlaying = false;
+let gameStartTime = 0; // audioContext.currentTime when beat 0 starts
+let zoomStartTime = 0;
+
+// Player state
+let currentDir = 0;  // 0 or 1 (the two directions)
+let turnIndex = 0;   // how many correct turns the player has made
+let currentBeat = 0;
+let playerX = 0, playerY = 0;
+let alive = true;
+let score = 0;
+let combo = 0;
+let trail = []; // [{x,y}] for the line the player draws
+let drawReqId;
+let lastBroadcastTime = 0;
+
+// Spawn offsets for multiplayer (each player starts slightly offset)
+const SPAWN_OFFSETS = [
+    { x: 0, y: 0 },
+    { x: -200, y: 100 },
+    { x: 200, y: 100 },
+    { x: -100, y: 200 },
+    { x: 100, y: -200 },
+    { x: 0, y: 200 },
+];
+
+function getSpawnOffset(spawnIndex) {
+    return SPAWN_OFFSETS[spawnIndex % SPAWN_OFFSETS.length];
+}
+
+// ========================================================================
+//  GAME LIFECYCLE
+// ========================================================================
 
 joinOverlay.addEventListener('pointerdown', () => {
-    unlockAudioContext();
+    unlockAudio();
     joinOverlay.style.display = 'none';
 });
 
-function updateGameUI() {
-    livesDisplay.textContent = '❤️'.repeat(lives) + '🖤'.repeat(3 - lives);
-    scoreDisplay.textContent = `Score: ${score}`;
-}
-
-function createHitEffect(x, y, text, color) {
-    if (!audioContext) return;
-    hitEffects.push({ x, y, text, time: audioContext.currentTime, color });
-}
-
-// --- Audio Engine ---
-function stopAudio() {
-    isPlaying = false;
-    clearTimeout(timerID);
-    cancelAnimationFrame(drawReqId);
-    if (activeMode === 'calib') {
-        startBtn.textContent = 'START CALIB';
-        beatCircle.style.background = '';
-    } else {
-        startGameBtn.textContent = 'START GAME';
-        if (gameState !== 'idle') gameState = 'idle';
-        drawGame(0);
+startBtn.addEventListener('click', () => {
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'startRequest' }));
     }
-}
+});
 
-function startCalib() {
-    unlockAudioContext();
-    isPlaying = true; currentNote = 0;
-    startTime = audioContext.currentTime + 0.1;
-    nextNoteTime = startTime;
-    scheduledBeats.length = 0; notesInQueue.length = 0; lastDrawnNote = -1;
-    startBtn.textContent = 'STOP CALIB';
-    scheduler();
-    drawReqId = requestAnimationFrame(draw);
-}
+retryBtn.addEventListener('click', () => {
+    gameoverOverlay.style.display = 'none';
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'startRequest' }));
+    }
+});
 
 function handleStartGame(startDelayMs) {
-    unlockAudioContext();
-    
-    lives = 3; score = 0; updateGameUI();
+    unlockAudio();
+    gameoverOverlay.style.display = 'none';
+    startBtn.style.display = 'none';
+
+    // Build track
+    const spawn = getSpawnOffset(localSpawnIndex);
+    const built = buildTrackGeometry(spawn.x, spawn.y);
+    turnPoints = built.points;
+    totalBeats = built.totalBeats;
+    wallSegments = buildWalls(turnPoints);
+
+    // Reset player
+    currentDir = TRACK_SEGMENTS[0].dir;
+    turnIndex = 0;
+    currentBeat = 0;
+    playerX = turnPoints[0].x;
+    playerY = turnPoints[0].y;
+    alive = true;
+    score = 0;
+    combo = 0;
+    trail = [{ x: playerX, y: playerY }];
+    updateHUD();
+
+    // Timing
+    zoomStartTime = audioContext.currentTime;
+    gameStartTime = zoomStartTime + (startDelayMs / 1000);
+    nextScheduledBeat = 0;
+
     gameState = 'starting';
-    
-    pathNodes = generatePlayerPath(localPlayer.spawnIndex);
-    otherPlayersPaths = {};
-    for (const id in players) {
-        if (id !== localId) otherPlayersPaths[id] = generatePlayerPath(players[id].spawnIndex);
-        players[id].lives = 3; players[id].score = 0; players[id].deathBeat = undefined;
-    }
-    
-    zoomAnimStart = audioContext.currentTime;
-    // Exactly schedule start time
-    startTime = zoomAnimStart + (startDelayMs / 1000); 
-    
-    isPlaying = true; currentNote = 0;
-    nextNoteTime = startTime; // nothing plays until startTime!
-    scheduledBeats.length = 0; notesInQueue.length = 0; hitEffects = [];
-    
-    startGameBtn.textContent = 'STOP GAME';
-    scheduler();
-    if (!drawReqId) drawReqId = requestAnimationFrame(draw);
+    isPlaying = true;
+
+    // Start scheduler and render
+    scheduleAudio();
+    if (drawReqId) cancelAnimationFrame(drawReqId);
+    drawReqId = requestAnimationFrame(gameLoop);
 }
 
-function playClick(time, noteIndex) {
-    const osc = audioContext.createOscillator();
-    const env = audioContext.createGain();
-    osc.connect(env); env.connect(audioContext.destination);
-    
-    // Quarter note strong click, eighth note weak tick
-    if (noteIndex % 2 === 0) {
-        osc.frequency.value = (noteIndex === 0) ? 880.0 : 440.0;
-        env.gain.value = 1;
+function stopGame() {
+    isPlaying = false;
+    clearTimeout(schedulerTimer);
+    cancelAnimationFrame(drawReqId);
+    drawReqId = null;
+}
+
+function die() {
+    if (!alive) return;
+    alive = false;
+    gameState = 'dead';
+    playCrashSound();
+
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'dead' }));
+
+    finalScoreEl.textContent = `Score: ${score}`;
+    setTimeout(() => {
+        gameoverOverlay.style.display = 'flex';
+        startBtn.style.display = 'block';
+        stopGame();
+    }, 800);
+}
+
+function updateHUD() {
+    scoreDisplay.textContent = `Score: ${score}`;
+    comboDisplay.textContent = `Combo: ${combo}`;
+    const pct = totalBeats > 0 ? Math.min(100, Math.floor((currentBeat / totalBeats) * 100)) : 0;
+    progressDisplay.textContent = `${pct}%`;
+}
+
+// ========================================================================
+//  INPUT: TAP TO TURN
+// ========================================================================
+function handleTap() {
+    if (gameState !== 'playing' || !alive) return;
+
+    // Toggle direction
+    const newDir = 1 - currentDir;
+
+    // Check if this is the correct turn
+    // Find the next expected turn point
+    const nextTP = turnPoints[turnIndex + 1];
+    if (!nextTP) return;
+
+    // How close are we to the turn point (in beats)?
+    const diffBeats = Math.abs(currentBeat - nextTP.beat);
+    const bpm = getBPMAtBeat(currentBeat);
+    const diffMs = diffBeats * (60000 / bpm);
+
+    if (diffMs < 200 && newDir === nextTP.newDir) {
+        // Correct turn!
+        currentDir = newDir;
+        turnIndex++;
+        playTurnSound();
+
+        // Score based on precision
+        if (diffMs < 40) {
+            score += 300; combo++;
+        } else if (diffMs < 100) {
+            score += 200; combo++;
+        } else {
+            score += 100; combo++;
+        }
+        updateHUD();
     } else {
-        osc.frequency.value = 220.0;
-        env.gain.value = 0.2;
+        // Wrong turn or wrong timing → just toggle, will hit wall soon
+        currentDir = newDir;
+        combo = 0;
+        updateHUD();
     }
-    env.gain.exponentialRampToValueAtTime(0.001, time + 0.02);
-    osc.start(time); osc.stop(time + 0.03);
-}
 
-function playEcho() {
-    if (activeMode === 'calib') {
-        const ring = document.createElement('div');
-        ring.className = 'echo-ring';
-        beatCircle.appendChild(ring);
-        setTimeout(() => ring.remove(), 600);
-    }
-    if (audioContext && isPlaying) {
-        const osc = audioContext.createOscillator();
-        const env = audioContext.createGain();
-        osc.connect(env); env.connect(audioContext.destination);
-        osc.type = 'square'; osc.frequency.value = 600.0;
-        env.gain.value = 0.2;
-        env.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.1);
-        osc.start(audioContext.currentTime); osc.stop(audioContext.currentTime + 0.1);
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'playerUpdate', beat: currentBeat, alive, dir: currentDir, turnIndex }));
     }
 }
 
-function nextNote() {
-    nextNoteTime += TICK_SEC;
-    currentNote = (currentNote + 1) % 8;
-}
-
-function scheduler() {
-    while (nextNoteTime < audioContext.currentTime + scheduleAheadTime) {
-        const globalBeat = Math.round((nextNoteTime - startTime) / TICK_SEC) * 0.5;
-        notesInQueue.push({ note: currentNote, time: nextNoteTime });
-        scheduledBeats.push({ time: nextNoteTime, beat: globalBeat });
-        
-        playClick(nextNoteTime, currentNote);
-        nextNote();
-    }
-    while (scheduledBeats.length && scheduledBeats[0].time < audioContext.currentTime - 2.0) {
-        scheduledBeats.shift();
-    }
-    if (isPlaying) timerID = setTimeout(scheduler, lookahead);
-}
-
-// --- Input ---
-function handleInput() {
-    if (!isPlaying) return;
-    
-    const rawHitTime = audioContext.currentTime;
-    const adjustedHitTime = rawHitTime - (calibrationOffsetMs / 1000);
-
-    let minDiff = Infinity; let closestBeat = null;
-    for (const b of scheduledBeats) {
-        // Only target quarter notes for turns, unless track has 8th notes
-        // Actually, matching exact available turns is best
-        const diff = adjustedHitTime - b.time;
-        if (Math.abs(diff) < Math.abs(minDiff)) {
-            minDiff = diff; closestBeat = b;
-        }
-    }
-    if (!closestBeat || minDiff === Infinity) return;
-    const diffMs = Math.round(minDiff * 1000);
-
-    if (activeMode === 'calib') {
-        recentOffsets.push(diffMs);
-        if (recentOffsets.length > 5) recentOffsets.shift();
-        calibrationOffsetMs = Math.round(recentOffsets.reduce((a,b)=>a+b,0)/recentOffsets.length);
-        offsetDisplay.textContent = `Avg Delay: ${calibrationOffsetMs} ms`;
-        
-        hitResultEl.className = '';
-        if (Math.abs(diffMs) <= 30) { hitResultEl.textContent = `Perfect! (${diffMs}ms)`; hitResultEl.classList.add('perfect'); }
-        else if (Math.abs(diffMs) <= 80) { hitResultEl.textContent = `Good (${diffMs}ms)`; hitResultEl.classList.add('good'); }
-        else { hitResultEl.textContent = `Miss (${diffMs}ms)`; hitResultEl.classList.add('bad'); }
-        
-        if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'hit', diffMs}));
-
-    } else if (activeMode === 'game' && gameState === 'playing') {
-        const node = pathNodes.find(n => n.beat === closestBeat.beat && n.beat > 0);
-        if (node && !node.turned && !node.missed) {
-            if (Math.abs(diffMs) <= 120) {
-                node.turned = true; score += 100; updateGameUI();
-                createHitEffect(node.x, node.y, 'PERFECT', localPlayer.color);
-                if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'hit', diffMs, score, lives}));
-            } else {
-                node.missed = true; lives--; updateGameUI();
-                createHitEffect(node.x, node.y, 'MISS', '#ff5252');
-                if (lives <= 0) {
-                    gameState = 'over';
-                    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'dead' }));
-                }
-            }
-        }
-    }
-}
-
+// Tap anywhere = turn
 window.addEventListener('pointerdown', (e) => {
-    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'CANVAS') handleInput();
+    if (joinOverlay.style.display !== 'none' && joinOverlay.style.display !== '') return;
+    if (e.target.tagName === 'BUTTON') return;
+    handleTap();
 });
-canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); handleInput(); });
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && !e.repeat) { e.preventDefault(); handleInput(); }
+    if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        handleTap();
+    }
 });
 
-startBtn.addEventListener('click', () => isPlaying ? stopAudio() : startCalib());
-startGameBtn.addEventListener('click', () => {
-    if (isPlaying) stopAudio();
-    else if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'startRequest' }));
-});
-
-// --- Rendering ---
-function getPlayerPositionAtBeat(exactBeat, pathData, pState) {
-    if (pState.lives <= 0) {
-        if (pState.deathBeat === undefined) pState.deathBeat = exactBeat;
-        exactBeat = Math.min(exactBeat, pState.deathBeat);
-    }
-    let pX = pathData[0].x; let pY = pathData[0].y;
-    for (let i = 0; i < pathData.length - 1; i++) {
-        const curr = pathData[i]; const next = pathData[i+1];
-        if (exactBeat >= curr.beat && exactBeat < next.beat) {
-            const progress = exactBeat - curr.beat;
-            if (curr.missed && i > 0) {
-                const prev = pathData[i-1];
-                pX = curr.x + prev.dirX * (progress * SPEED);
-                pY = curr.y + prev.dirY * (progress * SPEED);
-            } else {
-                pX = curr.x + curr.dirX * (progress * SPEED);
-                pY = curr.y + curr.dirY * (progress * SPEED);
-            }
-            return { x: pX, y: pY, currNode: curr };
-        }
-    }
-    const last = pathData[pathData.length-1];
-    pX = last.x + last.dirX * ((exactBeat - last.beat) * SPEED);
-    pY = last.y + last.dirY * ((exactBeat - last.beat) * SPEED);
-    return { x: pX, y: pY, currNode: last };
+// ========================================================================
+//  COLLISION DETECTION
+// ========================================================================
+function pointToSegmentDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 
-function draw() {
-    const currentTime = audioContext ? audioContext.currentTime : 0;
-    
-    if (activeMode === 'calib') {
-        let drawNote = lastDrawnNote;
-        while (notesInQueue.length && notesInQueue[0].time < currentTime) {
-            drawNote = notesInQueue[0].note;
-            notesInQueue.shift();
-        }
-        if (drawNote !== lastDrawnNote) {
-            if (drawNote % 2 === 0) {
-                beatCircle.classList.add('beat-active');
-                beatCircle.style.background = drawNote === 0 
-                    ? 'radial-gradient(circle, #ff4081 0%, #c2185b 100%)' 
-                    : 'radial-gradient(circle, #1e88e5 0%, #1565c0 100%)';
-                setTimeout(() => {
-                    beatCircle.classList.remove('beat-active');
-                    beatCircle.style.background = '';
-                }, 100);
-            }
-            lastDrawnNote = drawNote;
-        }
-    } else if (activeMode === 'game') {
-        drawGame(currentTime);
+function isInsideCorridor(px, py) {
+    // Check if point is within WALL_HALF_WIDTH of any track segment centerline
+    for (let i = 0; i < turnPoints.length - 1; i++) {
+        const p0 = turnPoints[i], p1 = turnPoints[i + 1];
+        const dist = pointToSegmentDist(px, py, p0.x, p0.y, p1.x, p1.y);
+        if (dist < WALL_HALF_WIDTH - 2) return true;
     }
-    
-    if (isPlaying) drawReqId = requestAnimationFrame(draw);
+    return false;
 }
 
-function drawGame(currentTime) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    if (gameState === 'idle') {
-        ctx.fillStyle = 'white'; ctx.font = '700 20px Outfit'; ctx.textAlign = 'center';
-        ctx.fillText('Waiting for players...', canvas.width/2, canvas.height/2 - 20);
-        ctx.fillText('Tap START to begin', canvas.width/2, canvas.height/2 + 20);
+// ========================================================================
+//  GAME LOOP
+// ========================================================================
+function gameLoop(timestamp) {
+    if (!isPlaying) return;
+    drawReqId = requestAnimationFrame(gameLoop);
+
+    const now = audioContext.currentTime;
+
+    if (gameState === 'starting') {
+        // During zoom-in, don't advance the player
+        if (now >= gameStartTime) {
+            gameState = 'playing';
+        }
+        render(now);
         return;
     }
-    
-    const exactBeat = Math.max(0, (currentTime - startTime) / QUARTER_NOTE_SEC);
-    
-    const localPos = getPlayerPositionAtBeat(exactBeat, pathNodes, { lives });
-    let playerX = localPos.x; let playerY = localPos.y;
-    
-    // Check misses for local player
-    if (gameState === 'playing' && lives > 0) {
-        const curr = localPos.currNode;
-        if (curr && curr.beat !== 0 && exactBeat > curr.beat + 0.3 && !curr.turned && !curr.missed) {
-            curr.missed = true; lives--; updateGameUI();
-            createHitEffect(curr.x, curr.y, 'CRASH', '#ff5252');
-            if (lives <= 0) {
-                gameState = 'over';
-                if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'dead' }));
-            }
+
+    if (gameState === 'playing' && alive) {
+        // Update beat position
+        currentBeat = timeToBeat(now, gameStartTime);
+
+        // Update player position based on current direction
+        const bpm = getBPMAtBeat(currentBeat);
+        const secPerBeat = 60.0 / bpm;
+        const pixelsPerSec = PIXELS_PER_BEAT / secPerBeat;
+
+        // Position from turnIndex's point + movement in currentDir
+        const basePt = turnPoints[turnIndex];
+        if (basePt) {
+            const beatsFromTurn = currentBeat - basePt.beat;
+            const dist = beatsFromTurn * PIXELS_PER_BEAT;
+            const dv = DIR_VECS[currentDir];
+            playerX = basePt.x + dv.x * dist;
+            playerY = basePt.y + dv.y * dist;
+        }
+
+        // Record trail
+        const lastTrail = trail[trail.length - 1];
+        if (!lastTrail || Math.hypot(playerX - lastTrail.x, playerY - lastTrail.y) > 3) {
+            trail.push({ x: playerX, y: playerY });
+            if (trail.length > 2000) trail.shift();
+        }
+
+        // Collision: check if player is outside corridor
+        if (currentBeat > 0.5 && !isInsideCorridor(playerX, playerY)) {
+            die();
+        }
+
+        // Auto-miss: if we're past a turn point without turning
+        const nextTP = turnPoints[turnIndex + 1];
+        if (nextTP && currentBeat > nextTP.beat + 0.5) {
+            // Missed the turn completely
+            combo = 0;
+            updateHUD();
+        }
+
+        // Check if level complete
+        if (currentBeat >= totalBeats) {
+            gameState = 'dead'; // reuse for "complete"
+            alive = false;
+            finalScoreEl.textContent = `CLEAR! Score: ${score}`;
+            setTimeout(() => {
+                gameoverOverlay.querySelector('h2').textContent = 'STAGE CLEAR!';
+                gameoverOverlay.querySelector('h2').style.color = '#00e676';
+                gameoverOverlay.style.display = 'flex';
+                startBtn.style.display = 'block';
+                stopGame();
+            }, 500);
+        }
+
+        updateHUD();
+
+        // Broadcast state periodically
+        if (now - lastBroadcastTime > 0.1) {
+            broadcastState();
+            lastBroadcastTime = now;
         }
     }
-    
-    let scale = 1.0; let camX = playerX; let camY = playerY;
-    
+
+    render(now);
+}
+
+// ========================================================================
+//  RENDERING
+// ========================================================================
+function render(now) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Background
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Camera
+    let camX = playerX, camY = playerY;
+    let camScale = 1.0;
+
+    if (gameState === 'idle') {
+        // Draw title screen
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 28px Outfit';
+        ctx.textAlign = 'center';
+        ctx.fillText('Waiting for players...', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+
     if (gameState === 'starting') {
-        const elapsed = currentTime - zoomAnimStart;
-        if (elapsed < 2.0) {
-            const t = Math.min(1.0, elapsed / 2.0);
-            const ease = t * t * (3 - 2 * t);
-            scale = 0.2 + 0.8 * ease; // Zoom from 0.2 to 1.0
-            // Camera pans from (0, -200) to local player's start pos
-            camX = 0 + (pathNodes[0].x - 0) * ease;
-            camY = (-200) + (pathNodes[0].y - (-200)) * ease;
-        } else {
-            scale = 1.0;
-            camX = pathNodes[0].x; 
-            camY = pathNodes[0].y;
-            if (currentTime >= startTime) gameState = 'playing';
+        const elapsed = now - zoomStartTime;
+        const zoomDuration = (gameStartTime - zoomStartTime);
+        const t = Math.min(1, elapsed / zoomDuration);
+        const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+        // Start zoomed out showing all paths, then zoom in to player
+        camScale = 0.3 + 0.7 * ease;
+        const overviewX = turnPoints[Math.floor(turnPoints.length / 4)].x;
+        const overviewY = turnPoints[Math.floor(turnPoints.length / 4)].y;
+        camX = overviewX + (turnPoints[0].x - overviewX) * ease;
+        camY = overviewY + (turnPoints[0].y - overviewY) * ease;
+
+        // Countdown text
+        const remaining = gameStartTime - now;
+        if (remaining > 0) {
+            const countNum = Math.ceil(remaining);
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = `900 ${120 + (1 - (remaining % 1)) * 30}px Outfit`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(countNum, canvas.width / 2, canvas.height / 2);
+            ctx.restore();
         }
     }
 
     ctx.save();
-    ctx.translate(canvas.width/2, canvas.height*0.75);
-    ctx.scale(scale, scale);
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(camScale, camScale);
     ctx.translate(-camX, -camY);
-    
-    // Draw all players
-    for (const id in players) {
-        const pState = players[id];
-        const pPath = (id === localId) ? pathNodes : otherPlayersPaths[id];
-        if (!pPath) continue;
-        
-        ctx.lineWidth = 12; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-        ctx.beginPath();
-        for (let i = 0; i < pPath.length; i++) {
-            if (i === 0) ctx.moveTo(pPath[i].x, pPath[i].y);
-            else ctx.lineTo(pPath[i].x, pPath[i].y);
-        }
-        ctx.strokeStyle = pState.color + '33'; // 20% opacity trace
-        ctx.stroke();
-        
-        const pos = getPlayerPositionAtBeat(exactBeat, pPath, pState);
-        
-        // Turn nodes
-        for (const node of pPath) {
-            if (node.beat > 0 && node.beat <= exactBeat + 8) {
-                ctx.fillStyle = node.turned ? pState.color : (node.missed ? '#ff5252' : '#ffffff');
-                ctx.fillRect(node.x - 5, node.y - 5, 10, 10);
-            }
-        }
-        
-        // Player circle
-        ctx.fillStyle = (pState.lives <= 0) ? '#555' : pState.color;
-        ctx.beginPath(); ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2); ctx.fill();
-        if (pState.lives > 0) {
-            ctx.shadowColor = pState.color; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
-        }
+
+    // --- Draw corridor (correct path with walls) ---
+    // Floor
+    ctx.lineWidth = WALL_HALF_WIDTH * 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.beginPath();
+    for (let i = 0; i < turnPoints.length; i++) {
+        if (i === 0) ctx.moveTo(turnPoints[i].x, turnPoints[i].y);
+        else ctx.lineTo(turnPoints[i].x, turnPoints[i].y);
     }
-    
-    // Effects
-    for (let i = hitEffects.length - 1; i >= 0; i--) {
-        const eff = hitEffects[i];
-        const age = currentTime - eff.time;
-        if (age > 1.0) { hitEffects.splice(i, 1); continue; }
-        ctx.fillStyle = eff.color; ctx.globalAlpha = 1.0 - age;
-        ctx.font = '900 26px Outfit'; ctx.textAlign = 'center';
-        ctx.fillText(eff.text, eff.x, eff.y - (age * 60) - 20);
+    ctx.stroke();
+
+    // Wall edges (glow)
+    ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
+    ctx.strokeStyle = '#2a2a4a';
+    ctx.beginPath();
+    for (let i = 0; i < turnPoints.length; i++) {
+        if (i === 0) ctx.moveTo(turnPoints[i].x, turnPoints[i].y);
+        else ctx.lineTo(turnPoints[i].x, turnPoints[i].y);
+    }
+    ctx.stroke();
+
+    // Redraw floor on top
+    ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
+    ctx.strokeStyle = '#12122a';
+    ctx.beginPath();
+    for (let i = 0; i < turnPoints.length; i++) {
+        if (i === 0) ctx.moveTo(turnPoints[i].x, turnPoints[i].y);
+        else ctx.lineTo(turnPoints[i].x, turnPoints[i].y);
+    }
+    ctx.stroke();
+
+    // Turn point markers (diamonds/gems)
+    for (let i = 1; i < turnPoints.length; i++) {
+        const tp = turnPoints[i];
+        const collected = i <= turnIndex;
+        ctx.save();
+        ctx.translate(tp.x, tp.y);
+        ctx.rotate(Math.PI / 4);
+        const sz = collected ? 5 : 7;
+        ctx.fillStyle = collected ? '#333' : '#ffeb3b';
+        ctx.shadowColor = collected ? 'transparent' : '#ffeb3b';
+        ctx.shadowBlur = collected ? 0 : 12;
+        ctx.fillRect(-sz, -sz, sz * 2, sz * 2);
+        ctx.restore();
+    }
+
+    // --- Draw remote players' trails ---
+    for (const id in remotePlayers) {
+        const rp = remotePlayers[id];
+        if (!rp.trail || rp.trail.length < 2) continue;
+        ctx.strokeStyle = rp.color + '99';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(rp.trail[0].x, rp.trail[0].y);
+        for (let i = 1; i < rp.trail.length; i++) {
+            ctx.lineTo(rp.trail[i].x, rp.trail[i].y);
+        }
+        ctx.stroke();
+
+        // Remote player dot
+        const lastPt = rp.trail[rp.trail.length - 1];
+        ctx.fillStyle = rp.alive ? rp.color : '#555';
+        ctx.beginPath();
+        ctx.arc(lastPt.x, lastPt.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // --- Draw local player trail ---
+    if (trail.length >= 2) {
+        // Trail gradient: fade old parts
+        ctx.strokeStyle = localColor;
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.globalAlpha = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(trail[0].x, trail[0].y);
+        for (let i = 1; i < trail.length; i++) {
+            ctx.lineTo(trail[i].x, trail[i].y);
+        }
+        ctx.stroke();
         ctx.globalAlpha = 1.0;
     }
-    
-    ctx.restore();
-    
-    if (gameState === 'over') {
-        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,canvas.width,canvas.height);
-        ctx.fillStyle = '#ff5252'; ctx.font = '900 45px Outfit'; ctx.textAlign = 'center';
-        ctx.fillText('GAME OVER', canvas.width/2, canvas.height/2);
+
+    // --- Draw local player ---
+    if (alive) {
+        ctx.fillStyle = localColor;
+        ctx.shadowColor = localColor;
+        ctx.shadowBlur = 25;
+        ctx.beginPath();
+        ctx.arc(playerX, playerY, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    } else {
+        // Explosion effect
+        ctx.fillStyle = '#ff5252';
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.arc(playerX, playerY, 20, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
     }
+
+    ctx.restore();
 }
-drawGame(0);
+
+// Initial idle draw
+function drawIdle() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = '700 28px Outfit';
+    ctx.textAlign = 'center';
+    ctx.fillText('Waiting for players...', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.fillStyle = '#b0bec5';
+    ctx.font = '400 18px Outfit';
+    ctx.fillText('Press START to begin', canvas.width / 2, canvas.height / 2 + 20);
+}
+drawIdle();
