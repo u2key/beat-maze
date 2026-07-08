@@ -1,0 +1,24 @@
+{
+  "name": "beat-echo",
+  "version": "1.0.0",
+  "description": "A lightweight, ultra-low latency browser-based multiplayer rhythm game powered by WebTransport/WebSocket.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/u2key/beat-echo.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/u2key/beat-echo/issues"
+  },
+  "homepage": "https://github.com/u2key/beat-echo#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "ws": "^8.21.0"
+  }
+}
