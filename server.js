@@ -58,7 +58,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 25561;
 server.listen(PORT, () => {
     console.log(`beat_echo server running on http://localhost:${PORT}`);
 });
