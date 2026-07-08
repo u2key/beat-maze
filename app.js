@@ -14,6 +14,7 @@ const notesInQueue = []; // { note: currentNote, time: time }
 const scheduledBeats = []; // 判定用のビート時刻を保持 (過去/未来のジャストタイミング)
 const beatCircle = document.getElementById('beat-circle');
 const hitResultEl = document.getElementById('hit-result');
+const comboCountEl = document.getElementById('combo-count');
 let lastDrawnNote = -1;
 let drawReqId;
 
@@ -32,6 +33,12 @@ function initWebSocket() {
             const data = JSON.parse(event.data);
             if (data.type === 'hit') {
                 playEcho();
+            } else if (data.type === 'combo') {
+                comboCountEl.textContent = data.value;
+                comboCountEl.style.transform = 'scale(1.5)';
+                setTimeout(() => {
+                    comboCountEl.style.transform = 'scale(1)';
+                }, 100);
             }
         } catch (e) {
             console.error(e);

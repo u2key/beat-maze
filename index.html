@@ -73,10 +73,22 @@
         .perfect { color: #00e676; }
         .good { color: #ffea00; }
         .bad { color: #ff5252; }
+        #combo-display {
+            font-size: 2rem;
+            font-weight: 900;
+            color: #ffeb3b;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px rgba(255, 235, 59, 0.5);
+        }
+        #combo-count {
+            display: inline-block;
+            transition: transform 0.1s;
+        }
     </style>
 </head>
 <body>
     <h1>beat_echo</h1>
+    <div id="combo-display">Shared Combo: <span id="combo-count">0</span></div>
     <p>Precise Web Audio API Metronome (120 BPM)</p>
     <div id="beat-circle"></div>
     <div id="hit-result">Press Space to the beat!</div>
