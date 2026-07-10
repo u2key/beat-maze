@@ -377,7 +377,8 @@ function updatePhysics() {
                 combo: p.combo,
                 currentDir: p.currentDir,
                 trail: p.trail,
-                finished: p.finished
+                finished: p.finished,
+                anchor: p.anchor
             };
             return acc;
         }, {})
