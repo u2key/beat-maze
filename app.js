@@ -82,7 +82,9 @@ function initWebSocket() {
                     localSpawnIndex = data.spawnIndex;
                     players = data.players;
                     selectedSongId = data.selectedSong;
+                    gameState = data.gameState || 'idle';
                     updatePlayersList();
+                    updateStartButtonText();
                     
                     // Retrieve list of songs from server
                     fetchSongsList();
@@ -107,6 +109,23 @@ function initWebSocket() {
                     
                 case 'songsUpdated':
                     fetchSongsList();
+                    break;
+                    
+                case 'gameStateChange':
+                    gameState = data.gameState;
+                    if (data.players) {
+                        players = data.players;
+                        localPlayer = players[localId];
+                        updatePlayersList();
+                    }
+                    updateStartButtonText();
+                    
+                    if (gameState === 'idle') {
+                        // Match ended: return to song selection automatically
+                        songSelection.style.display = 'flex';
+                        gameoverOverlay.style.display = 'none';
+                        stopGame();
+                    }
                     break;
                     
                 case 'startGame':
@@ -288,10 +307,26 @@ async function downloadSongData(songId) {
         loadedAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         
         downloadStatus.textContent = `Ready to play!`;
-        startGameBtn.style.display = 'block';
+        updateStartButtonText();
     } catch (e) {
         downloadStatus.textContent = `Failed to load song files.`;
         console.error(e);
+    }
+}
+
+function updateStartButtonText() {
+    const isSpectator = localPlayer && localPlayer.spectator;
+    if (isSpectator || gameState !== 'idle') {
+        startGameBtn.textContent = "SPECTATE";
+    } else {
+        startGameBtn.textContent = "START GAME";
+    }
+    
+    // Show start button if selected song is fully downloaded
+    if (loadedTrackData && loadedAudioBuffer) {
+        startGameBtn.style.display = 'block';
+    } else {
+        startGameBtn.style.display = 'none';
     }
 }
 
@@ -416,8 +451,10 @@ function handleStartGame(startDelayMs) {
     gameoverOverlay.style.display = 'none';
     songSelection.style.display = 'none';
     
+    const isSpectator = localPlayer && localPlayer.spectator;
+    
     // Reset locals
-    alive = true;
+    alive = !isSpectator;
     score = 0;
     combo = 0;
     updateHUD(0);
@@ -429,7 +466,7 @@ function handleStartGame(startDelayMs) {
         precalculatedTracks[id] = precalculatePathPoints(loadedTrackData.segments, p.spawnIndex);
         
         // Reset player objects
-        p.alive = true;
+        p.alive = !p.spectator;
         p.score = 0;
         p.combo = 0;
         p.finished = false;
@@ -456,9 +493,20 @@ function handleStartGame(startDelayMs) {
     audioSource = audioContext.createBufferSource();
     audioSource.buffer = loadedAudioBuffer;
     audioSource.connect(audioContext.destination);
-    audioSource.start(gameStartTime);
+    
+    const nowTime = audioContext.currentTime;
+    if (nowTime < gameStartTime) {
+        audioSource.start(gameStartTime);
+    } else {
+        // Late join as spectator: align audio playback
+        const offset = nowTime - gameStartTime;
+        if (offset < loadedAudioBuffer.duration) {
+            audioSource.start(nowTime, offset);
+        }
+    }
     
     gameState = 'starting';
+    if (nowTime >= gameStartTime) gameState = 'playing';
     
     if (drawReqId) cancelAnimationFrame(drawReqId);
     drawReqId = requestAnimationFrame(gameLoop);
@@ -497,6 +545,10 @@ function updateHUD(t) {
 
 function handleTap() {
     if (gameState !== 'playing' || !alive) return;
+    
+    // Spectators cannot tap/turn
+    const isSpectator = localPlayer && localPlayer.spectator;
+    if (isSpectator) return;
     
     // Direct tap reporting - timing validation is managed by the server
     if (ws && ws.readyState === 1) {
@@ -571,8 +623,26 @@ function gameLoop() {
     // Smooth position projection for rendering
     let localPos = { x: 0, y: 0 };
     const localP = players[localId];
-    if (localP) {
+    
+    if (localP && !localP.spectator && localP.alive) {
         localPos = getSmoothPlayerPosition(localP, t);
+    } else {
+        // Spectating or dead: follow the first alive active player
+        let followTarget = null;
+        for (const id in players) {
+            const p = players[id];
+            if (p.alive && !p.spectator) {
+                followTarget = p;
+                break;
+            }
+        }
+        if (followTarget) {
+            localPos = getSmoothPlayerPosition(followTarget, t);
+        } else {
+            // Fallback to local spawn point
+            const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : { x: 0, y: 0 };
+            localPos = { x: startPt.x, y: startPt.y };
+        }
     }
     
     render(t, localPos.x, localPos.y);
