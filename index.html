@@ -23,65 +23,103 @@
             background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
             background-size: 400% 400%; animation: gradBG 12s ease infinite;
             z-index: 9999; display: flex; flex-direction: column;
-            align-items: center; justify-content: center; cursor: pointer;
+            align-items: center; justify-content: center;
         }
         @keyframes gradBG {
             0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}
         }
         #join-overlay h1 {
-            font-size: 3.5rem; font-weight: 900;
+            font-size: 4rem; font-weight: 900;
             background: linear-gradient(45deg, #00e676, #ffeb3b);
             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
             filter: drop-shadow(0 0 20px rgba(0,230,118,0.5));
+            margin-bottom: 20px;
         }
-        #join-overlay p {
-            font-size: 1.4rem; color: #00e676; font-weight: 700;
-            margin-top: 20px; animation: blink 1.2s infinite;
+        
+        #username-input {
+            padding: 15px 25px; font-size: 1.2rem; border-radius: 30px;
+            border: 2px solid #00e676; background: rgba(0,0,0,0.6); color: #fff;
+            text-align: center; font-family: 'Outfit', sans-serif; font-weight: 700;
+            width: 280px; outline: none; transition: all 0.3s;
+            box-shadow: 0 0 15px rgba(0, 230, 118, 0.2);
         }
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        #username-input:focus {
+            border-color: #ffeb3b;
+            box-shadow: 0 0 25px rgba(255, 235, 59, 0.4);
+        }
 
-        /* --- Song Selection View --- */
+        /* --- Song Selection View (Lobby) --- */
         #song-selection {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: #0f0c29; z-index: 1000;
             display: none; flex-direction: column; align-items: center; justify-content: center;
+            padding: 20px;
         }
         #song-selection h2 {
-            font-size: 2.5rem; margin-bottom: 25px;
+            font-size: 2.8rem; margin-bottom: 25px; font-weight: 900;
             background: linear-gradient(45deg, #00e676, #ffeb3b);
             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 15px rgba(0,230,118,0.3));
         }
-        #songs-container {
-            display: flex; flex-direction: column; gap: 12px;
-            width: 320px; max-height: 45vh; overflow-y: auto;
-            padding: 10px; border-radius: 12px;
+        
+        #lobby-layout {
+            display: flex; gap: 25px; width: 850px; max-width: 95vw;
+            justify-content: center; align-items: stretch; z-index: 200;
+        }
+        .lobby-panel {
+            flex: 1; display: flex; flex-direction: column;
             background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px; padding: 20px; backdrop-filter: blur(10px);
+            max-height: 55vh;
+        }
+        .lobby-panel h3 {
+            font-size: 1.3rem; font-weight: 700; margin-bottom: 15px;
+            color: #ffeb3b; border-bottom: 2px solid rgba(255,255,255,0.05);
+            padding-bottom: 8px; text-transform: uppercase; letter-spacing: 1px;
+        }
+        
+        #songs-container {
+            display: flex; flex-direction: column; gap: 10px;
+            overflow-y: auto; flex: 1; padding-right: 5px;
         }
         .song-item {
-            padding: 15px; border-radius: 10px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
+            padding: 12px 15px; border-radius: 10px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
             cursor: pointer; transition: all 0.2s;
-            text-align: left;
             display: flex; align-items: center; justify-content: space-between;
         }
         .song-item:hover {
-            background: rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.08);
             border-color: #00e676;
             transform: translateX(4px);
         }
         .song-item.selected {
-            background: rgba(0,230,118,0.15);
+            background: rgba(0,230,118,0.12);
             border-color: #00e676;
+            box-shadow: 0 0 15px rgba(0, 230, 118, 0.15);
         }
-        .song-title { font-weight: 700; font-size: 1.1rem; color: #fff; }
-        .song-meta { font-size: 0.85rem; color: #b0bec5; margin-top: 4px; }
+        .song-title { font-weight: 700; font-size: 1.05rem; color: #fff; }
+        .song-meta { font-size: 0.8rem; color: #b0bec5; margin-top: 3px; }
         
-        #download-status {
-            margin-top: 20px; font-weight: 700; color: #00b0ff;
-            min-height: 1.5rem; font-size: 1rem;
+        /* Leaderboard styling */
+        #leaderboard-list {
+            overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 8px;
         }
+        .leaderboard-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 14px; border-radius: 8px;
+            background: rgba(255,255,255,0.02);
+            border-left: 4px solid #b0bec5;
+        }
+        .leaderboard-item.rank-1 { border-left-color: #ffd700; background: rgba(255, 215, 0, 0.05); }
+        .leaderboard-item.rank-2 { border-left-color: #c0c0c0; background: rgba(192, 192, 192, 0.03); }
+        .leaderboard-item.rank-3 { border-left-color: #cd7f32; background: rgba(205, 127, 50, 0.03); }
+        .rank-num { font-weight: 900; font-size: 1.1rem; width: 20px; text-align: center; }
+        .rank-name { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rank-pct { font-weight: 900; color: #00e676; }
+        .rank-score { font-size: 0.85rem; color: #ffeb3b; }
 
         /* --- HUD --- */
         #hud {
@@ -106,18 +144,18 @@
 
         /* --- Action Button --- */
         .action-btn {
-            padding: 18px 50px; font-size: 1.3rem;
+            padding: 16px 45px; font-size: 1.25rem;
             font-family: 'Outfit', sans-serif; font-weight: 900;
             background: linear-gradient(45deg, #1e88e5, #ff4081);
             color: white; border: none; border-radius: 50px; cursor: pointer;
-            text-transform: uppercase; letter-spacing: 3px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-transform: uppercase; letter-spacing: 2px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4);
             transition: all 0.3s;
             margin-top: 25px;
         }
         .action-btn:hover {
-            transform: translateY(-3px) scale(1.05);
-            box-shadow: 0 15px 40px rgba(255,64,129,0.5);
+            transform: translateY(-3px) scale(1.03);
+            box-shadow: 0 15px 35px rgba(255,64,129,0.45);
         }
 
         /* --- Game Over Overlay --- */
@@ -158,25 +196,42 @@
     </style>
 </head>
 <body>
+    <!-- Join Game / Input Username Overlay -->
     <div id="join-overlay">
         <h1>beat_maze</h1>
-        <p>TAP TO JOIN</p>
+        <input type="text" id="username-input" placeholder="USERNAME" maxlength="12" autofocus>
+        <button id="join-btn" class="action-btn">JOIN LOBBY</button>
     </div>
 
-    <!-- Song Selection Screen -->
+    <!-- Song Selection Screen (Lobby) -->
     <div id="song-selection">
-        <h2>SELECT SONG</h2>
-        <div id="songs-container">
-            <!-- Dynamically populated -->
-        </div>
+        <h2>beat_maze Lobby</h2>
         
-        <!-- Upload Form -->
-        <div id="upload-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 320px; padding: 12px; background: rgba(255,255,255,0.03); border: 1px dashed rgba(255,255,255,0.2); border-radius: 12px; z-index: 200;">
-            <div style="font-size: 0.9rem; color: #b0bec5; font-weight: 700;">Upload new MP3 (auto-generate nodes)</div>
-            <label class="action-btn" style="padding: 10px 25px; font-size: 0.9rem; margin-top: 5px; cursor: pointer; background: linear-gradient(45deg, #1e88e5, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px;">
-                Choose MP3
-                <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
-            </label>
+        <div id="lobby-layout">
+            <!-- Left Panel: Tracks List -->
+            <div class="lobby-panel">
+                <h3>Tracks</h3>
+                <div id="songs-container">
+                    <!-- Dynamically populated -->
+                </div>
+                
+                <!-- Upload Container -->
+                <div id="upload-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.15); border-radius: 12px;">
+                    <div style="font-size: 0.85rem; color: #b0bec5; font-weight: 700;">Upload MP3 (auto-generate corridor)</div>
+                    <label class="action-btn" style="padding: 8px 20px; font-size: 0.8rem; margin-top: 3px; cursor: pointer; background: linear-gradient(45deg, #1e88e5, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px;">
+                        Choose MP3
+                        <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Right Panel: Song Leaderboard -->
+            <div class="lobby-panel" id="leaderboard-panel">
+                <h3>Leaderboard</h3>
+                <div id="leaderboard-list">
+                    <div style="color: #b0bec5; font-style: italic; text-align: center; margin-top: 40px;">Select a song to load rankings</div>
+                </div>
+            </div>
         </div>
         
         <div id="download-status"></div>
@@ -200,7 +255,7 @@
     <div id="gameover-overlay">
         <h2>GAME OVER</h2>
         <div class="final-score" id="final-score">Score: 0</div>
-        <button id="retry-btn">SELECT SONG</button>
+        <button id="retry-btn">Back to Lobby</button>
     </div>
 
     <script src="app.js"></script>
