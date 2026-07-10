@@ -240,6 +240,12 @@
             <button class="diff-btn active" data-diff="3" style="padding: 6px 14px; border-radius: 15px; border: 1px solid #00e676; background: rgba(0,230,118,0.1); color: #00e676; cursor: pointer; font-weight: 700; font-family: 'Outfit'; transition: all 0.2s;">★★★</button>
         </div>
         
+        <div id="calibration-container" style="margin-top: 12px; display: flex; gap: 10px; align-items: center; justify-content: center; z-index: 200;">
+            <span style="font-weight: 700; font-size: 0.95rem; color: #b0bec5; letter-spacing: 1px;">DELAY COMP (LATENCY):</span>
+            <input type="range" id="calibration-slider" min="-250" max="250" value="-80" style="width: 140px; accent-color: #00e676; cursor: pointer;">
+            <span id="calibration-val" style="font-weight: 700; font-size: 0.95rem; color: #00e676; width: 65px; text-align: left;">-80 ms</span>
+        </div>
+        
         <div id="download-status"></div>
         <button id="start-game-btn" class="action-btn" style="display: none;">START GAME</button>
     </div>
