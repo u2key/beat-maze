@@ -459,14 +459,18 @@ audioFileInput.addEventListener('change', async (e) => {
 
 // --- Audio Controls & Synth ---
 function unlockAudio() {
-    if (audioUnlocked) return;
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === 'suspended') audioContext.resume();
-    
-    const b = audioContext.createBuffer(1, 1, 22050);
-    const s = audioContext.createBufferSource();
-    s.buffer = b; s.connect(audioContext.destination); s.start(0);
-    audioUnlocked = true;
+    try {
+        if (audioUnlocked) return;
+        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioContext.state === 'suspended') audioContext.resume();
+        
+        const b = audioContext.createBuffer(1, 1, 22050);
+        const s = audioContext.createBufferSource();
+        s.buffer = b; s.connect(audioContext.destination); s.start(0);
+        audioUnlocked = true;
+    } catch (e) {
+        console.warn("Web Audio unlock failed or blocked by browser policies:", e);
+    }
 }
 
 function playLocalTurnFeedback(judgment) {
