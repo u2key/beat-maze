@@ -103,8 +103,8 @@ function getSongsList() {
                         title: data.title || id,
                         bpm: data.bpm || 120,
                         leadIn: data.leadIn || 2.5,
-                        mp3: `/songs/${id}.mp3`,
-                        json: `/songs/${id}.json`
+                        mp3: `songs/${id}.mp3`,
+                        json: `songs/${id}.json`
                     });
                 }
             } catch (e) {
