@@ -19,6 +19,7 @@
   "homepage": "https://github.com/u2key/beat-echo#readme",
   "dependencies": {
     "express": "^5.2.1",
+    "multer": "^2.2.0",
     "ws": "^8.21.0"
   }
 }
