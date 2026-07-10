@@ -53,6 +53,7 @@ let selectedSongId = null;
 let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
 let currentLeaderboard = [];
+let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
 
 let gameState = 'idle'; // idle | starting | playing | dead
 let alive = true;
@@ -88,6 +89,10 @@ function initWebSocket() {
                     players = data.players;
                     selectedSongId = data.selectedSong;
                     gameState = data.gameState || 'idle';
+                    selectedDifficulty = data.selectedDifficulty || 3;
+                    updatePlayersList();
+                    updateStartButtonText();
+                    updateDifficultyUI();
                     
                     // Retrieve list of songs from server
                     fetchSongsList();
@@ -116,6 +121,11 @@ function initWebSocket() {
                     fetchSongsList();
                     break;
                     
+                case 'difficultySelected':
+                    selectedDifficulty = data.difficulty;
+                    updateDifficultyUI();
+                    break;
+                    
                 case 'leaderboardUpdate':
                     if (data.songId === selectedSongId) {
                         currentLeaderboard = data.leaderboard || [];
@@ -140,7 +150,7 @@ function initWebSocket() {
                     break;
                     
                 case 'startGame':
-                    handleStartGame(data.startDelay);
+                    handleStartGame(data.startDelay, data.segments);
                     break;
                     
                 case 'playerUpdate':
@@ -525,7 +535,7 @@ function updatePlayersList() {
     }
 }
 
-function handleStartGame(startDelayMs) {
+function handleStartGame(startDelayMs, serverSegments) {
     unlockAudio();
     gameoverOverlay.style.display = 'none';
     songSelection.style.display = 'none';
@@ -542,7 +552,7 @@ function handleStartGame(startDelayMs) {
     precalculatedTracks = {};
     for (const id in players) {
         const p = players[id];
-        precalculatedTracks[id] = precalculatePathPoints(loadedTrackData.segments, p.spawnIndex);
+        precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
         
         p.alive = !p.spectator;
         p.score = 0;
@@ -881,4 +891,34 @@ function render(t, camX, camY) {
     }
     
     ctx.restore();
+}
+
+// --- Difficulty Selector Logic ---
+const diffBtns = document.querySelectorAll('.diff-btn');
+diffBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        if (gameState === 'idle') {
+            const diff = parseInt(btn.getAttribute('data-diff'));
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'selectDifficulty', difficulty: diff }));
+            }
+        }
+    });
+});
+
+function updateDifficultyUI() {
+    diffBtns.forEach(btn => {
+        const diff = parseInt(btn.getAttribute('data-diff'));
+        if (diff === selectedDifficulty) {
+            btn.classList.add('active');
+            btn.style.borderColor = '#00e676';
+            btn.style.background = 'rgba(0, 230, 118, 0.1)';
+            btn.style.color = '#00e676';
+        } else {
+            btn.classList.remove('active');
+            btn.style.borderColor = 'rgba(255,255,255,0.2)';
+            btn.style.background = 'rgba(0,0,0,0.4)';
+            btn.style.color = '#fff';
+        }
+    });
 }
