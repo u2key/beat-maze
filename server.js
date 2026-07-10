@@ -140,29 +140,63 @@ const upload = multer({
     }
 });
 
-// Upload song endpoint (triggers python generator)
-app.post('/api/songs/upload', upload.single('audio'), (req, res) => {
+// Configure Multer for chunked memory storage
+const memoryStorage = multer.memoryStorage();
+const uploadChunk = multer({ storage: memoryStorage });
+
+// Chunked upload endpoint
+app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res) => {
     if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        return res.status(400).json({ error: 'No chunk uploaded' });
     }
     
-    const mp3Path = req.file.path;
-    const id = req.file.filename.replace(/\.[^/.]+$/, ""); // strip extension
-    const jsonPath = path.join(__dirname, 'songs', `${id}.json`);
+    const { filename, uploadId, chunkIndex, totalChunks } = req.body;
+    const idx = parseInt(chunkIndex);
+    const total = parseInt(totalChunks);
     
-    console.log(`Uploaded ${req.file.filename}. Running python generator...`);
+    // Clean filename
+    const cleanedName = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const id = cleanedName.replace(/\.[^/.]+$/, ""); // strip extension
     
-    exec(`python3 generate_notes.py "${mp3Path}" "${jsonPath}"`, (error, stdout, stderr) => {
-        if (error) {
-            console.error(`Error generating notes: ${error}`);
-            try { fs.unlinkSync(mp3Path); } catch(e) {}
-            return res.status(500).json({ error: 'Failed to process audio and generate notes.' });
-        }
+    const tmpPath = path.join(__dirname, 'songs', `tmp_${uploadId}.mp3`);
+    
+    try {
+        // Append chunk buffer to the temp file
+        fs.appendFileSync(tmpPath, req.file.buffer);
         
-        console.log(`Successfully processed song: ${id}`);
-        broadcast({ type: 'songsUpdated' });
-        res.json({ success: true, songs: getSongsList() });
-    });
+        // If it is the last chunk, finalize the file and run the note generator
+        if (idx === total - 1) {
+            const finalMp3Path = path.join(__dirname, 'songs', `${id}.mp3`);
+            const finalJsonPath = path.join(__dirname, 'songs', `${id}.json`);
+            
+            // Rename temp file to final location (overwrite if exists)
+            if (fs.existsSync(finalMp3Path)) {
+                fs.unlinkSync(finalMp3Path);
+            }
+            fs.renameSync(tmpPath, finalMp3Path);
+            
+            console.log(`Finished assembling ${filename}. Running note generator...`);
+            
+            exec(`python3 generate_notes.py "${finalMp3Path}" "${finalJsonPath}"`, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`Error generating notes: ${error}`);
+                    try { fs.unlinkSync(finalMp3Path); } catch(e) {}
+                    return res.status(500).json({ error: 'Failed to process audio and generate notes.' });
+                }
+                
+                console.log(`Successfully processed song: ${id}`);
+                broadcast({ type: 'songsUpdated' });
+                res.json({ success: true, completed: true, songs: getSongsList() });
+            });
+        } else {
+            // Chunk received successfully
+            res.json({ success: true, completed: false, chunkIndex: idx });
+        }
+    } catch (e) {
+        console.error("Chunk upload error:", e);
+        try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch(err) {}
+        res.status(500).json({ error: "Failed to write audio chunk." });
+    }
 });
 
 // Delete song endpoint
