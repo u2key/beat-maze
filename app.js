@@ -362,43 +362,61 @@ function updateStartButtonText() {
     }
 }
 
-// Upload file handler
+// Upload file handler (chunked upload to bypass proxy size limits)
 audioFileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     
-    const formData = new FormData();
-    formData.append('audio', file);
+    const CHUNK_SIZE = 500 * 1024; // 500 KB chunks
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const uploadId = Math.random().toString(36).substring(2, 15);
     
-    downloadStatus.textContent = "Uploading song to server...";
+    downloadStatus.textContent = `Preparing upload...`;
     startGameBtn.style.display = 'none';
     
     try {
-        const res = await fetch('./api/songs/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!res.ok) {
-            if (res.status === 413) {
-                downloadStatus.textContent = "Upload failed: File is too large! Please upload a smaller MP3 (under 2MB).";
-            } else {
-                downloadStatus.textContent = `Upload failed: Server error (Status ${res.status})`;
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+            const start = chunkIndex * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunkBlob = file.slice(start, end);
+            
+            const formData = new FormData();
+            formData.append('audioChunk', chunkBlob);
+            formData.append('filename', file.name);
+            formData.append('uploadId', uploadId);
+            formData.append('chunkIndex', chunkIndex);
+            formData.append('totalChunks', totalChunks);
+            
+            const pct = Math.round((chunkIndex / totalChunks) * 100);
+            downloadStatus.textContent = `Uploading: ${pct}% (Chunk ${chunkIndex + 1}/${totalChunks})`;
+            
+            const res = await fetch('./api/songs/upload-chunk', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!res.ok) {
+                downloadStatus.textContent = `Upload failed at chunk ${chunkIndex + 1} (Status ${res.status})`;
+                console.error("Chunk upload failed:", res.status, res.statusText);
+                audioFileInput.value = '';
+                return;
             }
-            console.error("Upload error details:", res.status, res.statusText);
-            return;
-        }
-        
-        const result = await res.json();
-        if (result.success) {
-            downloadStatus.textContent = "Processing complete! Song added.";
-        } else {
-            downloadStatus.textContent = result.error || "Upload failed.";
+            
+            const result = await res.json();
+            
+            if (result.completed) {
+                downloadStatus.textContent = "Processing complete! Song added.";
+            } else if (!result.success) {
+                downloadStatus.textContent = result.error || "Chunk upload rejected.";
+                audioFileInput.value = '';
+                return;
+            }
         }
     } catch(err) {
         downloadStatus.textContent = "Upload failed. Connection error.";
         console.error(err);
     }
+    
     audioFileInput.value = '';
 });
 
