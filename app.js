@@ -1036,6 +1036,7 @@ function closeCalib() {
 cancelCalibBtn.addEventListener('click', closeCalib);
 
 autoCalibBtn.addEventListener('click', () => {
+    if (calibActive) return;
     unlockAudio();
     
     calibActive = true;
