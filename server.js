@@ -175,19 +175,22 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             }
             fs.renameSync(tmpPath, finalMp3Path);
             
-            console.log(`Finished assembling ${filename}. Running note generator...`);
+            console.log(`Finished assembling ${filename}. Starting note generator in background...`);
             
+            // Respond immediately to prevent gateway timeout
+            res.json({ success: true, completed: true, status: 'processing' });
+            
+            // Run generator in background
             exec(`python3 generate_notes.py "${finalMp3Path}" "${finalJsonPath}"`, (error, stdout, stderr) => {
                 if (error) {
-                    console.error(`Error generating notes: ${error}`);
+                    console.error(`Error generating notes in background: ${error}`);
                     fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
                     try { fs.unlinkSync(finalMp3Path); } catch(e) {}
-                    return res.status(500).json({ error: 'Failed to process audio and generate notes.' });
+                    return;
                 }
                 
-                console.log(`Successfully processed song: ${id}`);
+                console.log(`Successfully processed song in background: ${id}`);
                 broadcast({ type: 'songsUpdated' });
-                res.json({ success: true, completed: true, songs: getSongsList() });
             });
         } else {
             // Chunk received successfully
