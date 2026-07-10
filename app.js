@@ -381,11 +381,11 @@ audioFileInput.addEventListener('change', async (e) => {
             const chunkBlob = file.slice(start, end);
             
             const formData = new FormData();
-            formData.append('audioChunk', chunkBlob);
             formData.append('filename', file.name);
             formData.append('uploadId', uploadId);
             formData.append('chunkIndex', chunkIndex);
             formData.append('totalChunks', totalChunks);
+            formData.append('audioChunk', chunkBlob);
             
             const pct = Math.round((chunkIndex / totalChunks) * 100);
             downloadStatus.textContent = `Uploading: ${pct}% (Chunk ${chunkIndex + 1}/${totalChunks})`;
