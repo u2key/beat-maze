@@ -194,6 +194,12 @@ function initWebSocket() {
 }
 initWebSocket();
 
+// Load username from localStorage if exists
+const storedUsername = localStorage.getItem('beat_maze_username');
+if (storedUsername) {
+    usernameInput.value = storedUsername;
+}
+
 // --- Join Lobby Username Logic ---
 function joinLobby() {
     const name = usernameInput.value.trim();
@@ -201,6 +207,9 @@ function joinLobby() {
         alert("Please enter a username.");
         return;
     }
+    
+    // Save username in localStorage
+    localStorage.setItem('beat_maze_username', name);
     
     unlockAudio();
     
