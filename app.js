@@ -8,6 +8,7 @@ const retryBtn = document.getElementById('retry-btn');
 const gameoverOverlay = document.getElementById('gameover-overlay');
 const scoreDisplay = document.getElementById('score-display');
 const comboDisplay = document.getElementById('combo-display');
+const audioFileInput = document.getElementById('audio-file-input');
 const progressDisplay = document.getElementById('progress-display');
 const finalScoreEl = document.getElementById('final-score');
 const playersList = document.getElementById('players-list');
@@ -104,6 +105,10 @@ function initWebSocket() {
                     await downloadSongData(data.songId);
                     break;
                     
+                case 'songsUpdated':
+                    fetchSongsList();
+                    break;
+                    
                 case 'startGame':
                     handleStartGame(data.startDelay);
                     break;
@@ -173,10 +178,50 @@ function renderSongsList() {
     songList.forEach(song => {
         const div = document.createElement('div');
         div.className = `song-item ${selectedSongId === song.id ? 'selected' : ''}`;
-        div.innerHTML = `
+        
+        // Left side info
+        const textDiv = document.createElement('div');
+        textDiv.innerHTML = `
             <div class="song-title">${song.title}</div>
             <div class="song-meta">${song.bpm} BPM | ${song.leadIn.toFixed(1)}s Lead-in</div>
         `;
+        div.appendChild(textDiv);
+        
+        // Right side delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.innerHTML = '🗑️';
+        deleteBtn.style.background = 'none';
+        deleteBtn.style.border = 'none';
+        deleteBtn.style.color = '#ff5252';
+        deleteBtn.style.cursor = 'pointer';
+        deleteBtn.style.fontSize = '1.2rem';
+        deleteBtn.style.padding = '5px 10px';
+        deleteBtn.style.transition = 'transform 0.2s';
+        
+        deleteBtn.addEventListener('mouseenter', () => deleteBtn.style.transform = 'scale(1.2)');
+        deleteBtn.addEventListener('mouseleave', () => deleteBtn.style.transform = 'scale(1.0)');
+        
+        deleteBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (confirm(`Are you sure you want to delete ${song.title}?`)) {
+                downloadStatus.textContent = `Deleting song...`;
+                try {
+                    const res = await fetch(`/api/songs/${song.id}`, { method: 'DELETE' });
+                    const result = await res.json();
+                    if (result.success) {
+                        downloadStatus.textContent = "Song deleted.";
+                    } else {
+                        downloadStatus.textContent = result.error || "Failed to delete.";
+                    }
+                } catch(err) {
+                    downloadStatus.textContent = "Failed to delete.";
+                    console.error(err);
+                }
+            }
+        });
+        
+        div.appendChild(deleteBtn);
+        
         div.addEventListener('click', () => {
             // Select song on server
             if (ws && ws.readyState === 1) {
@@ -186,6 +231,37 @@ function renderSongsList() {
         songsContainer.appendChild(div);
     });
 }
+
+// Upload file handler (auto-processes through python note generator)
+audioFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('audio', file);
+    
+    downloadStatus.textContent = "Uploading song to server...";
+    startGameBtn.style.display = 'none';
+    
+    try {
+        const res = await fetch('/api/songs/upload', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await res.json();
+        if (result.success) {
+            downloadStatus.textContent = "Processing complete! Song added.";
+        } else {
+            downloadStatus.textContent = result.error || "Upload failed.";
+        }
+    } catch(err) {
+        downloadStatus.textContent = "Upload failed.";
+        console.error(err);
+    }
+    
+    // Reset file input
+    audioFileInput.value = '';
+});
 
 async function downloadSongData(songId) {
     const song = songList.find(s => s.id === songId);
