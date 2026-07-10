@@ -3,6 +3,8 @@ const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
+const { exec } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +50,78 @@ function getSongsList() {
 
 app.get('/api/songs', (req, res) => {
     res.json(getSongsList());
+});
+
+// Configure Multer for MP3 uploads
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, path.join(__dirname, 'songs'));
+    },
+    filename: function (req, file, cb) {
+        // Clean filename (alphanumeric, dashes, underscores)
+        const cleanedName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        cb(null, cleanedName);
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    fileFilter: function (req, file, cb) {
+        if (!file.originalname.toLowerCase().endsWith('.mp3')) {
+            return cb(new Error('Only MP3 audio files are allowed.'));
+        }
+        cb(null, true);
+    }
+});
+
+// Upload song endpoint (triggers python generator)
+app.post('/api/songs/upload', upload.single('audio'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const mp3Path = req.file.path;
+    const id = req.file.filename.replace(/\.[^/.]+$/, ""); // strip extension
+    const jsonPath = path.join(__dirname, 'songs', `${id}.json`);
+    
+    console.log(`Uploaded ${req.file.filename}. Running python generator...`);
+    
+    exec(`python3 generate_notes.py "${mp3Path}" "${jsonPath}"`, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Error generating notes: ${error}`);
+            try { fs.unlinkSync(mp3Path); } catch(e) {}
+            return res.status(500).json({ error: 'Failed to process audio and generate notes.' });
+        }
+        
+        console.log(`Successfully processed song: ${id}`);
+        broadcast({ type: 'songsUpdated' });
+        res.json({ success: true, songs: getSongsList() });
+    });
+});
+
+// Delete song endpoint
+app.delete('/api/songs/:id', (req, res) => {
+    const id = req.params.id;
+    const mp3Path = path.join(__dirname, 'songs', `${id}.mp3`);
+    const jsonPath = path.join(__dirname, 'songs', `${id}.json`);
+    
+    console.log(`Deleting song: ${id}`);
+    
+    try {
+        if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+        if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
+        
+        if (selectedSong && selectedSong.id === id) {
+            selectedSong = null;
+            broadcast({ type: 'songSelected', songId: null, title: null });
+        }
+        
+        broadcast({ type: 'songsUpdated' });
+        res.json({ success: true, songs: getSongsList() });
+    } catch (e) {
+        console.error("Failed to delete song files:", e);
+        res.status(500).json({ error: "Failed to delete song files." });
+    }
 });
 
 // --- Game Constants ---
