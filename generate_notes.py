@@ -19,6 +19,11 @@ def analyze_mp3(file_path, output_json_path):
         tempo = float(tempo[0])
     else:
         tempo = float(tempo)
+    
+    import math
+    if tempo <= 0 or math.isnan(tempo):
+        tempo = 120.0
+        
     print(f"Estimated Tempo: {tempo:.2f} BPM")
     
     print("Detecting note onsets...")
