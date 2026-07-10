@@ -54,6 +54,8 @@ let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
 let currentLeaderboard = [];
 let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
+let latency = 0;
+let calibrationOffset = -0.08; // default -80ms
 
 let gameState = 'idle'; // idle | starting | playing | dead
 let alive = true;
@@ -77,6 +79,10 @@ window.addEventListener('resize', resizeCanvas);
 function initWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${location.host}${location.pathname}`);
+    
+    ws.onopen = () => {
+        startPingLoop();
+    };
     
     ws.onmessage = async (ev) => {
         try {
@@ -126,6 +132,11 @@ function initWebSocket() {
                     updateDifficultyUI();
                     break;
                     
+                case 'pong':
+                    const rtt = Date.now() - data.sendTime;
+                    latency = rtt / 2;
+                    break;
+                    
                 case 'leaderboardUpdate':
                     if (data.songId === selectedSongId) {
                         currentLeaderboard = data.leaderboard || [];
@@ -149,9 +160,11 @@ function initWebSocket() {
                     }
                     break;
                     
-                case 'startGame':
-                    handleStartGame(data.startDelay, data.segments);
+                case 'startGame': {
+                    const adjustedDelay = Math.max(0, data.startDelay - latency);
+                    handleStartGame(adjustedDelay, data.segments);
                     break;
+                }
                     
                 case 'playerUpdate':
                     if (gameState === 'idle') break;
@@ -647,7 +660,10 @@ function handleTap() {
     if (localP && localP.spectator) return;
     
     if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'tap' }));
+        // Send the local music tap time with calibration offset applied
+        const tapTime = audioContext.currentTime - gameStartTime;
+        const calibratedTime = tapTime + calibrationOffset;
+        ws.send(JSON.stringify({ type: 'tap', time: calibratedTime }));
     }
 }
 
@@ -930,4 +946,32 @@ function updateDifficultyUI() {
             btn.style.color = '#fff';
         }
     });
+}
+
+// --- Latency Calibration & Ping Logic ---
+const calibrationSlider = document.getElementById('calibration-slider');
+const calibrationVal = document.getElementById('calibration-val');
+
+calibrationSlider.addEventListener('input', (e) => {
+    const ms = parseInt(e.target.value);
+    calibrationOffset = ms / 1000;
+    calibrationVal.textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
+    localStorage.setItem('beat_maze_calibration', ms);
+});
+
+// Load calibration from localStorage on startup
+const storedCalib = localStorage.getItem('beat_maze_calibration');
+if (storedCalib !== null) {
+    const ms = parseInt(storedCalib);
+    calibrationSlider.value = ms;
+    calibrationOffset = ms / 1000;
+    calibrationVal.textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
+}
+
+function startPingLoop() {
+    setInterval(() => {
+        if (ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'ping', sendTime: Date.now() }));
+        }
+    }, 3000);
 }
