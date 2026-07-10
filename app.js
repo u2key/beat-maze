@@ -221,6 +221,11 @@ async function fetchSongsList() {
         if (selectedSongId) {
             downloadSongData(selectedSongId);
         }
+        
+        // Clear background processing status if song list was successfully updated
+        if (downloadStatus.textContent.includes("Processing")) {
+            downloadStatus.textContent = "Processing complete! Song added.";
+        }
     } catch (e) {
         console.error("Failed to fetch songs list:", e);
     }
@@ -405,7 +410,7 @@ audioFileInput.addEventListener('change', async (e) => {
             const result = await res.json();
             
             if (result.completed) {
-                downloadStatus.textContent = "Processing complete! Song added.";
+                downloadStatus.textContent = "Upload successful! Processing audio in background...";
             } else if (!result.success) {
                 downloadStatus.textContent = result.error || "Chunk upload rejected.";
                 audioFileInput.value = '';
