@@ -168,6 +168,16 @@
         <div id="songs-container">
             <!-- Dynamically populated -->
         </div>
+        
+        <!-- Upload Form -->
+        <div id="upload-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 320px; padding: 12px; background: rgba(255,255,255,0.03); border: 1px dashed rgba(255,255,255,0.2); border-radius: 12px; z-index: 200;">
+            <div style="font-size: 0.9rem; color: #b0bec5; font-weight: 700;">Upload new MP3 (auto-generate nodes)</div>
+            <label class="action-btn" style="padding: 10px 25px; font-size: 0.9rem; margin-top: 5px; cursor: pointer; background: linear-gradient(45deg, #1e88e5, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px;">
+                Choose MP3
+                <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
+            </label>
+        </div>
+        
         <div id="download-status"></div>
         <button id="start-game-btn" class="action-btn" style="display: none;">START GAME</button>
     </div>
