@@ -201,13 +201,15 @@ wss.on('connection', (ws) => {
     const color = COLORS[nextSpawnIndex % COLORS.length];
     const spawnIndex = nextSpawnIndex++;
 
+    const isSpectator = gameState !== 'idle';
     players[id] = {
         id,
         color,
         spawnIndex,
         score: 0,
         combo: 0,
-        alive: true,
+        alive: !isSpectator,
+        spectator: isSpectator,
         x: 0,
         y: 0,
         currentDir: 0,
@@ -224,7 +226,8 @@ wss.on('connection', (ws) => {
         color,
         spawnIndex,
         players,
-        selectedSong: selectedSong ? selectedSong.id : null
+        selectedSong: selectedSong ? selectedSong.id : null,
+        gameState
     }));
 
     // Notify other players
@@ -254,7 +257,7 @@ wss.on('connection', (ws) => {
             }
             
             case 'startRequest': {
-                if (gameState === 'playing' || !selectedSong) return;
+                if (gameState !== 'idle' || !selectedSong) return;
                 
                 // Synchronized start sequence: 4 seconds delay
                 // 2 seconds zoom-out to zoom-in, 2 seconds count down
@@ -263,10 +266,14 @@ wss.on('connection', (ws) => {
                 gameState = 'starting';
                 sharedCombo = 0;
                 
-                // Precalculate trajectories for all players
+                // Broadcast game state change
+                broadcast({ type: 'gameStateChange', gameState });
+                
+                // Precalculate trajectories for all players in this round
                 trackTurnPoints = {};
                 for (const pid in players) {
                     const p = players[pid];
+                    p.spectator = false; // Everyone in lobby is active now
                     const pts = precalculatePathPoints(trackSegments, p.spawnIndex);
                     trackTurnPoints[pid] = pts;
                     
@@ -361,16 +368,30 @@ wss.on('connection', (ws) => {
         }
     });
 
+    ws.onclose = () => {
+        // ...
+    };
+
     ws.on('close', () => {
         delete players[id];
         delete trackTurnPoints[id];
         broadcast({ type: 'playerLeft', id });
         
-        // Stop server loop if lobby is empty
-        if (Object.keys(players).length === 0) {
+        // Stop server loop if no active players are left
+        const activePlayersCount = Object.values(players).filter(p => !p.spectator).length;
+        if (activePlayersCount === 0 && gameInterval) {
             clearInterval(gameInterval);
             gameInterval = null;
             gameState = 'idle';
+            // Reset all remaining players to lobby status
+            for (const pid in players) {
+                players[pid].spectator = false;
+                players[pid].alive = true;
+                players[pid].x = 0;
+                players[pid].y = 0;
+                players[pid].trail = [];
+            }
+            broadcast({ type: 'gameStateChange', gameState: 'idle', players });
         }
     });
 });
@@ -386,6 +407,8 @@ function updatePhysics() {
     
     for (const id in players) {
         const p = players[id];
+        if (p.spectator) continue; // Skip spectators
+        
         const turnPoints = trackTurnPoints[id];
         
         if (!p || !turnPoints) continue;
@@ -463,6 +486,20 @@ function updatePhysics() {
         clearInterval(gameInterval);
         gameInterval = null;
         gameState = 'idle';
+        
+        // Reset player properties for the lobby
+        for (const pid in players) {
+            const p = players[pid];
+            p.alive = true;
+            p.spectator = false;
+            p.score = 0;
+            p.combo = 0;
+            p.x = 0;
+            p.y = 0;
+            p.trail = [];
+        }
+        
+        broadcast({ type: 'gameStateChange', gameState: 'idle', players });
     }
 }
 
