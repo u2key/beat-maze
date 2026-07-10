@@ -408,6 +408,11 @@ wss.on('connection', (ws) => {
                 break;
             }
             
+            case 'ping': {
+                ws.send(JSON.stringify({ type: 'pong', sendTime: data.sendTime }));
+                break;
+            }
+            
             case 'startRequest': {
                 if (gameState !== 'idle' || !selectedSong) return;
                 
@@ -459,7 +464,14 @@ wss.on('connection', (ws) => {
                 const p = players[id];
                 if (!p || !p.alive || p.spectator) return;
                 
-                const t = (Date.now() - gameStartTime) / 1000;
+                const serverT = (Date.now() - gameStartTime) / 1000;
+                const t = (typeof data.time === 'number') ? data.time : serverT;
+                
+                // Cheat prevention: reject if client time deviates by more than 1.0s from server time
+                if (Math.abs(t - serverT) > 1.0) {
+                    return;
+                }
+                
                 const turnPoints = trackTurnPoints[id];
                 if (!turnPoints) return;
                 
@@ -574,7 +586,7 @@ function updatePhysics() {
                 const nextTurn = turnPoints[p.turnIndex + 1];
                 const totalTime = turnPoints[turnPoints.length - 1].time;
                 
-                if (nextTurn && t > nextTurn.time + 0.3) {
+                if (nextTurn && t > nextTurn.time + 0.45) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
