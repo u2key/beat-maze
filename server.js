@@ -271,6 +271,7 @@ let trackSegments = [];
 let trackTurnPoints = {}; // playerId -> array of points
 let sharedCombo = 0;
 let gameState = 'idle'; // idle | starting | playing
+let selectedDifficulty = 3; // 1: Easy (★), 2: Medium (★★), 3: Hard (★★★)
 
 // Helper math for collision
 function pointToSegmentDist(px, py, x1, y1, x2, y2) {
@@ -346,7 +347,8 @@ wss.on('connection', (ws) => {
         spawnIndex,
         players,
         selectedSong: selectedSong ? selectedSong.id : null,
-        gameState
+        gameState,
+        selectedDifficulty
     }));
 
     ws.on('message', (message) => {
@@ -398,6 +400,14 @@ wss.on('connection', (ws) => {
                 break;
             }
             
+            case 'selectDifficulty': {
+                if (gameState === 'idle') {
+                    selectedDifficulty = parseInt(data.difficulty) || 3;
+                    broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
+                }
+                break;
+            }
+            
             case 'startRequest': {
                 if (gameState !== 'idle' || !selectedSong) return;
                 
@@ -408,12 +418,15 @@ wss.on('connection', (ws) => {
                 
                 broadcast({ type: 'gameStateChange', gameState });
                 
+                // Filter track segments based on selected difficulty
+                const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                
                 // Reset and precalculate paths for active players
                 trackTurnPoints = {};
                 for (const pid in players) {
                     const p = players[pid];
                     p.spectator = false;
-                    const pts = precalculatePathPoints(trackSegments, p.spawnIndex);
+                    const pts = precalculatePathPoints(filteredSegments, p.spawnIndex);
                     trackTurnPoints[pid] = pts;
                     
                     p.alive = true;
@@ -429,7 +442,7 @@ wss.on('connection', (ws) => {
                     p.finished = false;
                 }
                 
-                broadcast({ type: 'startGame', startDelay });
+                broadcast({ type: 'startGame', startDelay, segments: filteredSegments });
                 
                 if (gameInterval) clearInterval(gameInterval);
                 
@@ -647,6 +660,42 @@ function broadcast(msg) {
     wss.clients.forEach(c => {
         if (c.readyState === WebSocket.OPEN) c.send(str);
     });
+}
+
+function filterSegmentsByDifficulty(originalSegments, bpm, difficulty) {
+    if (difficulty === 3 || originalSegments.length <= 2) return originalSegments;
+    
+    const beatDuration = 60.0 / bpm;
+    // minGap: 1 (Easy) -> 2 beats, 2 (Medium) -> 1 beat
+    const minGap = (difficulty === 2) ? beatDuration : (2.0 * beatDuration);
+    
+    const filtered = [];
+    filtered.push(originalSegments[0]);
+    
+    let lastKeptTime = originalSegments[0].time;
+    let currentDir = originalSegments[0].dir;
+    
+    for (let i = 1; i < originalSegments.length - 1; i++) {
+        const seg = originalSegments[i];
+        if (seg.time - lastKeptTime >= minGap) {
+            currentDir = 1 - currentDir;
+            filtered.push({
+                time: seg.time,
+                dir: currentDir
+            });
+            lastKeptTime = seg.time;
+        }
+    }
+    
+    // Always append the last segment to close the track
+    const lastSeg = originalSegments[originalSegments.length - 1];
+    currentDir = 1 - currentDir;
+    filtered.push({
+        time: lastSeg.time,
+        dir: currentDir
+    });
+    
+    return filtered;
 }
 
 const PORT = process.env.PORT || 25561;
