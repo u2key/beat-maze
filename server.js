@@ -638,7 +638,7 @@ function updatePhysics() {
                     } else {
                         allFinished = false;
                     }
-                }           }
+                }
             } else {
                 allFinished = false;
             }
