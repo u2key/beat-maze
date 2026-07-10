@@ -1055,17 +1055,27 @@ autoCalibBtn.addEventListener('click', () => {
         const time = start + i * interval;
         calibTicks.push(time);
         
-        // Play synthetically generated 1000Hz click
+        // Play synthetically generated metronome woodblock clack
         const osc = audioContext.createOscillator();
         const gain = audioContext.createGain();
-        osc.connect(gain);
+        const filter = audioContext.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = 1200;
+        filter.Q.value = 3;
+        
+        osc.connect(filter);
+        filter.connect(gain);
         gain.connect(audioContext.destination);
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(1000, time);
-        gain.gain.setValueAtTime(0.35, time);
-        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+        
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1200, time);
+        osc.frequency.exponentialRampToValueAtTime(600, time + 0.04);
+        
+        gain.gain.setValueAtTime(0.5, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
+        
         osc.start(time);
-        osc.stop(time + 0.06);
+        osc.stop(time + 0.05);
         
         // Visual flash and tick updates
         const delayMs = (time - audioContext.currentTime) * 1000;
