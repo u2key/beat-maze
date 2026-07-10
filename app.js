@@ -951,6 +951,17 @@ function updateDifficultyUI() {
 // --- Latency Calibration & Ping Logic ---
 const calibrationSlider = document.getElementById('calibration-slider');
 const calibrationVal = document.getElementById('calibration-val');
+const autoCalibBtn = document.getElementById('auto-calib-btn');
+const calibrationOverlay = document.getElementById('calibration-overlay');
+const calibProgressBar = document.getElementById('calib-progress-bar');
+const calibVisualFlash = document.getElementById('calib-visual-flash');
+const calibStatusText = document.getElementById('calib-status-text');
+const cancelCalibBtn = document.getElementById('cancel-calib-btn');
+
+let calibActive = false;
+let calibTicks = [];
+let calibTaps = [];
+let calibTickTimers = [];
 
 calibrationSlider.addEventListener('input', (e) => {
     const ms = parseInt(e.target.value);
@@ -975,3 +986,153 @@ function startPingLoop() {
         }
     }, 3000);
 }
+
+// --- Semi-Automatic Calibration Routine ---
+const handleCalibTap = (e) => {
+    if (!calibActive) return;
+    if (e.target === cancelCalibBtn) return;
+    
+    const now = audioContext.currentTime;
+    calibTaps.push(now);
+    
+    // Visual Tap Feedback
+    calibVisualFlash.style.transform = 'scale(1.15)';
+    calibVisualFlash.style.background = 'rgba(0, 230, 118, 0.35)';
+    calibVisualFlash.style.borderColor = '#00e676';
+    calibVisualFlash.style.color = '#fff';
+    setTimeout(() => {
+        calibVisualFlash.style.transform = 'none';
+        calibVisualFlash.style.background = 'rgba(255,255,255,0.02)';
+        calibVisualFlash.style.borderColor = 'rgba(255,255,255,0.15)';
+        calibVisualFlash.style.color = 'rgba(255,255,255,0.4)';
+    }, 85);
+};
+
+const handleCalibKey = (e) => {
+    if (e.code === 'Space') {
+        e.preventDefault();
+        handleCalibTap(e);
+    }
+};
+
+function cleanupCalib() {
+    calibTickTimers.forEach(t => clearTimeout(t));
+    calibTickTimers = [];
+    window.removeEventListener('keydown', handleCalibKey);
+    calibrationOverlay.removeEventListener('pointerdown', handleCalibTap);
+}
+
+function closeCalib() {
+    calibActive = false;
+    cleanupCalib();
+    calibrationOverlay.style.display = 'none';
+    calibProgressBar.style.width = '0%';
+}
+
+cancelCalibBtn.addEventListener('click', closeCalib);
+
+autoCalibBtn.addEventListener('click', () => {
+    unlockAudio();
+    
+    calibActive = true;
+    calibTicks = [];
+    calibTaps = [];
+    calibTickTimers = [];
+    
+    calibProgressBar.style.width = '0%';
+    calibStatusText.textContent = "Get ready...";
+    calibStatusText.style.color = "#ffea00";
+    calibrationOverlay.style.display = 'flex';
+    
+    window.addEventListener('keydown', handleCalibKey);
+    calibrationOverlay.addEventListener('pointerdown', handleCalibTap);
+    
+    const start = audioContext.currentTime + 1.2; // 1.2s lead-in
+    const interval = 0.5; // 120 BPM (2 ticks per second)
+    const totalTicks = 20; // 10 seconds total
+    
+    for (let i = 0; i < totalTicks; i++) {
+        const time = start + i * interval;
+        calibTicks.push(time);
+        
+        // Play synthetically generated 1000Hz click
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1000, time);
+        gain.gain.setValueAtTime(0.35, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+        osc.start(time);
+        osc.stop(time + 0.06);
+        
+        // Visual flash and tick updates
+        const delayMs = (time - audioContext.currentTime) * 1000;
+        const tickNum = i + 1;
+        const timerId = setTimeout(() => {
+            if (!calibActive) return;
+            calibStatusText.textContent = `Tap! (${tickNum} / ${totalTicks})`;
+            calibStatusText.style.color = '#00e676';
+            calibProgressBar.style.width = `${(tickNum / totalTicks) * 100}%`;
+            
+            // Metronome sync visual pulse
+            calibVisualFlash.style.boxShadow = '0 0 25px rgba(0, 176, 255, 0.4)';
+            setTimeout(() => {
+                calibVisualFlash.style.boxShadow = 'none';
+            }, 75);
+        }, delayMs);
+        calibTickTimers.push(timerId);
+    }
+    
+    // Schedule calculation run after all ticks finish
+    const finishDelayMs = (start + totalTicks * interval + 0.5 - audioContext.currentTime) * 1000;
+    const endTimer = setTimeout(() => {
+        if (!calibActive) return;
+        
+        calibActive = false;
+        cleanupCalib();
+        
+        const diffs = [];
+        calibTaps.forEach(tapTime => {
+            let closestTick = null;
+            let minDist = Infinity;
+            calibTicks.forEach(tickTime => {
+                const d = Math.abs(tapTime - tickTime);
+                if (d < minDist) {
+                    minDist = d;
+                    closestTick = tickTime;
+                }
+            });
+            
+            // Only keep taps closer than 250ms to any beat tick (prevent random clicks)
+            if (closestTick !== null && minDist < 0.25) {
+                diffs.push(tapTime - closestTick);
+            }
+        });
+        
+        if (diffs.length < 5) {
+            calibStatusText.textContent = "Calibration failed: Too few taps detected!";
+            calibStatusText.style.color = "#ff1744";
+            setTimeout(closeCalib, 2200);
+            return;
+        }
+        
+        // Calculate average difference (tapTime - tickTime)
+        const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+        
+        // Delay compensation (calibrating early/late taps)
+        const offsetMs = Math.round(-avgDiff * 1000);
+        const clampedOffsetMs = Math.max(-250, Math.min(250, offsetMs));
+        
+        calibrationOffset = clampedOffsetMs / 1000;
+        calibrationSlider.value = clampedOffsetMs;
+        calibrationVal.textContent = `${clampedOffsetMs > 0 ? '+' : ''}${clampedOffsetMs} ms`;
+        localStorage.setItem('beat_maze_calibration', clampedOffsetMs);
+        
+        calibStatusText.textContent = `Success! Delay: ${clampedOffsetMs} ms`;
+        calibStatusText.style.color = "#00e676";
+        setTimeout(closeCalib, 2500);
+    }, finishDelayMs);
+    calibTickTimers.push(endTimer);
+});
