@@ -44,21 +44,23 @@ function saveLeaderboard() {
     }
 }
 
-function recordScore(songId, playerName, pct, score) {
+function recordScore(songId, difficulty, playerName, pct, score) {
     if (!songId || !playerName) return;
     
-    if (!leaderboard[songId]) {
-        leaderboard[songId] = [];
+    const key = `${songId}_diff${difficulty}`;
+    
+    if (!leaderboard[key]) {
+        leaderboard[key] = [];
     }
     
     // Check if player already has an entry
-    const existingIndex = leaderboard[songId].findIndex(entry => entry.name === playerName);
+    const existingIndex = leaderboard[key].findIndex(entry => entry.name === playerName);
     
     if (existingIndex !== -1) {
-        const existing = leaderboard[songId][existingIndex];
+        const existing = leaderboard[key][existingIndex];
         // Only update if current run has a higher completion percentage, or equal percentage but higher score
         if (pct > existing.percent || (pct === existing.percent && score > existing.score)) {
-            leaderboard[songId][existingIndex] = {
+            leaderboard[key][existingIndex] = {
                 name: playerName,
                 percent: pct,
                 score: score,
@@ -66,7 +68,7 @@ function recordScore(songId, playerName, pct, score) {
             };
         }
     } else {
-        leaderboard[songId].push({
+        leaderboard[key].push({
             name: playerName,
             percent: pct,
             score: score,
@@ -75,16 +77,16 @@ function recordScore(songId, playerName, pct, score) {
     }
     
     // Sort descending by percentage, then descending by score
-    leaderboard[songId].sort((a, b) => {
+    leaderboard[key].sort((a, b) => {
         if (b.percent !== a.percent) return b.percent - a.percent;
         return b.score - a.score;
     });
     
     // Keep top 10 rankings
-    leaderboard[songId] = leaderboard[songId].slice(0, 10);
+    leaderboard[key] = leaderboard[key].slice(0, 10);
     
     saveLeaderboard();
-    broadcast({ type: 'leaderboardUpdate', songId, leaderboard: leaderboard[songId] });
+    broadcast({ type: 'leaderboardUpdate', songId, difficulty, leaderboard: leaderboard[key] });
 }
 
 // Get the list of all available songs in the songs/ directory
@@ -235,10 +237,11 @@ app.delete('/api/songs/:id', (req, res) => {
         }
         
         // Remove from local leaderboard DB too
-        if (leaderboard[id]) {
-            delete leaderboard[id];
-            saveLeaderboard();
-        }
+        delete leaderboard[id];
+        delete leaderboard[`${id}_diff1`];
+        delete leaderboard[`${id}_diff2`];
+        delete leaderboard[`${id}_diff3`];
+        saveLeaderboard();
         
         broadcast({ type: 'songsUpdated' });
         res.json({ success: true, songs: getSongsList() });
@@ -372,10 +375,12 @@ wss.on('connection', (ws) => {
                     
                     // Send current leaderboard to this specific client if song is selected
                     if (selectedSong) {
+                        const key = `${selectedSong.id}_diff${selectedDifficulty}`;
                         ws.send(JSON.stringify({
                             type: 'leaderboardUpdate',
                             songId: selectedSong.id,
-                            leaderboard: leaderboard[selectedSong.id] || []
+                            difficulty: selectedDifficulty,
+                            leaderboard: leaderboard[key] || []
                         }));
                     }
                 }
@@ -394,10 +399,12 @@ wss.on('connection', (ws) => {
                         broadcast({ type: 'songSelected', songId: song.id, title: song.title });
                         
                         // Broadcast leaderboard for the newly selected song
+                        const key = `${song.id}_diff${selectedDifficulty}`;
                         broadcast({
                             type: 'leaderboardUpdate',
                             songId: song.id,
-                            leaderboard: leaderboard[song.id] || []
+                            difficulty: selectedDifficulty,
+                            leaderboard: leaderboard[key] || []
                         });
                     } catch (err) {
                         console.error("Failed to load song segments", err);
@@ -410,6 +417,16 @@ wss.on('connection', (ws) => {
                 if (gameState === 'idle') {
                     selectedDifficulty = parseInt(data.difficulty) || 3;
                     broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
+                    
+                    if (selectedSong) {
+                        const key = `${selectedSong.id}_diff${selectedDifficulty}`;
+                        broadcast({
+                            type: 'leaderboardUpdate',
+                            songId: selectedSong.id,
+                            difficulty: selectedDifficulty,
+                            leaderboard: leaderboard[key] || []
+                        });
+                    }
                 }
                 break;
             }
@@ -591,14 +608,13 @@ function updatePhysics() {
                 // Missed turn point
                 const nextTurn = turnPoints[p.turnIndex + 1];
                 const totalTime = turnPoints[turnPoints.length - 1].time;
-                
-                if (nextTurn && t > nextTurn.time + 0.45) {
+                      if (nextTurn && t > nextTurn.time + 0.45) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
                     
                     const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, p.name, pct, p.score);
+                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score);
                 }
                 
                 // Wall crash
@@ -608,7 +624,7 @@ function updatePhysics() {
                     broadcast({ type: 'playerDead', id });
                     
                     const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, p.name, pct, p.score);
+                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score);
                 }
                 
                 // Finished level
@@ -617,12 +633,12 @@ function updatePhysics() {
                     if (t >= lastTurn.time) {
                         if (!p.finished) {
                             p.finished = true;
-                            recordScore(selectedSong.id, p.name, 100, p.score);
+                            recordScore(selectedSong.id, selectedDifficulty, p.name, 100, p.score);
                         }
                     } else {
                         allFinished = false;
                     }
-                }
+                }           }
             } else {
                 allFinished = false;
             }
