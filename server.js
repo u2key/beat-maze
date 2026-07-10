@@ -325,6 +325,7 @@ function precalculatePathPoints(segments, spawnIndex) {
 
 // WS connection handling
 wss.on('connection', (ws) => {
+    ws.isAlive = true;
     const id = Math.random().toString(36).substr(2, 9);
     const color = COLORS[nextSpawnIndex % COLORS.length];
     const spawnIndex = nextSpawnIndex++;
@@ -432,6 +433,7 @@ wss.on('connection', (ws) => {
             }
             
             case 'ping': {
+                ws.isAlive = true;
                 ws.send(JSON.stringify({ type: 'pong', sendTime: data.sendTime }));
                 break;
             }
@@ -731,6 +733,17 @@ function filterSegmentsByDifficulty(originalSegments, bpm, difficulty) {
     
     return filtered;
 }
+
+// Heartbeat interval to detect stale connections and terminate them
+const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            console.log(`Terminating stale/ghost client connection for player ID: ${ws.playerId}`);
+            return ws.terminate();
+        }
+        ws.isAlive = false;
+    });
+}, 15000);
 
 const PORT = process.env.PORT || 25561;
 server.listen(PORT, () => console.log(`beat_maze server on http://localhost:${PORT}`));
