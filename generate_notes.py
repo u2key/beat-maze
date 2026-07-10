@@ -4,6 +4,41 @@ import json
 import librosa
 import math
 
+def snap_to_grid(t, beats, tempo):
+    if len(beats) == 0:
+        # Fallback to static tempo grid if no beats detected
+        beat_duration = 60.0 / tempo
+        step = round(t / (beat_duration / 4.0)) # 16th note grid
+        return step * (beat_duration / 4.0)
+        
+    if t < beats[0]:
+        beat_duration = 60.0 / tempo
+        dist = beats[0] - t
+        beats_before = round(dist / beat_duration)
+        return beats[0] - beats_before * beat_duration
+        
+    if t >= beats[-1]:
+        beat_duration = 60.0 / tempo
+        dist = t - beats[-1]
+        beats_after = round(dist / beat_duration)
+        return beats[-1] + beats_after * beat_duration
+        
+    # Find containing beat interval
+    idx = 0
+    for i in range(len(beats) - 1):
+        if beats[i] <= t < beats[i+1]:
+            idx = i
+            break
+            
+    b0 = beats[idx]
+    b1 = beats[idx+1]
+    rel = (t - b0) / (b1 - b0)
+    
+    # Grid options: quarter notes (0.0, 1.0), 8th (0.5), 16th (0.25, 0.75), triplets (0.333, 0.667)
+    candidates = [0.0, 0.25, 0.3333, 0.5, 0.6667, 0.75, 1.0]
+    best_cand = min(candidates, key=lambda c: abs(rel - c))
+    return b0 + best_cand * (b1 - b0)
+
 def analyze_mp3(file_path, output_json_path):
     if not os.path.exists(file_path):
         print(f"Error: File {file_path} does not exist.")
@@ -27,43 +62,38 @@ def analyze_mp3(file_path, output_json_path):
     # Get beat times from frames
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     
-    # Construct an 8th-note grid aligned with the estimated BPM
-    grid_times = []
-    if len(beat_times) > 1:
-        for i in range(len(beat_times) - 1):
-            b0 = beat_times[i]
-            b1 = beat_times[i+1]
-            grid_times.append(b0)
-            grid_times.append(b0 + 0.5 * (b1 - b0)) # 8th note sub-beat
-        grid_times.append(beat_times[-1])
-    else:
-        # Fallback to static grid if beat tracking yielded insufficient beats
-        beat_duration = 60.0 / tempo
-        total_duration = len(y) / sr
-        step = 0
-        while step * (beat_duration / 2.0) < total_duration:
-            grid_times.append(step * (beat_duration / 2.0))
-            step += 1
-            
     print("Calculating onset strength envelope...")
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
     
-    # Map each grid candidate time to its local onset strength (volume change indicator)
-    candidates = []
-    lead_in = 2.5
+    print("Detecting precise onset peaks (with backtracking)...")
+    # Using backtrack=True to snap onset detections to local energy minima for maximum timing accuracy
+    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=True)
+    raw_onset_times = librosa.frames_to_time(onset_frames, sr=sr)
     
-    for t in grid_times:
+    lead_in = 2.5
+    snapped_candidates = {}
+    
+    for idx, t in enumerate(raw_onset_times):
         if t < lead_in:
             continue
-        # Convert time to frame index to query envelope strength
-        frame = librosa.time_to_frames(t, sr=sr)
-        if frame < len(onset_env):
-            strength = float(onset_env[frame])
-            candidates.append({
-                "time": float(t),
-                "strength": strength
-            })
             
+        frame = onset_frames[idx]
+        strength = float(onset_env[frame]) if frame < len(onset_env) else 0.0
+        
+        # Snap the raw onset time to the closest rhythmic beat grid point
+        snapped_time = snap_to_grid(t, beat_times, tempo)
+        snapped_time = round(snapped_time, 3)
+        
+        # Keep the strongest onset if multiple onsets snap to the same grid point
+        if snapped_time not in snapped_candidates or strength > snapped_candidates[snapped_time]["strength"]:
+            snapped_candidates[snapped_time] = {
+                "time": snapped_time,
+                "strength": strength
+            }
+            
+    # Sort candidates chronologically
+    candidates = sorted(list(snapped_candidates.values()), key=lambda x: x["time"])
+    
     # Minimum gap between turns (8th note length)
     min_gap = 60.0 / tempo / 2.0
     if min_gap < 0.22:
@@ -71,8 +101,7 @@ def analyze_mp3(file_path, output_json_path):
         
     print(f"Selecting peak beats using greedy grid alignment (min gap: {min_gap:.3f}s)...")
     
-    # Greedy peak selection: Sort candidates by onset strength descending.
-    # Keep the strongest beats, and discard any that are too close (violating min_gap).
+    # Sort candidates by strength descending for greedy peak selection
     candidates.sort(key=lambda x: x["strength"], reverse=True)
     
     selected_times = []
