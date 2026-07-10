@@ -12,6 +12,75 @@ const wss = new WebSocket.Server({ server });
 
 app.use(express.static(path.join(__dirname)));
 
+// --- Leaderboard Database (JSON file persistence) ---
+let leaderboard = {};
+const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+
+function loadLeaderboard() {
+    if (fs.existsSync(LEADERBOARD_FILE)) {
+        try {
+            leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8'));
+        } catch (e) {
+            console.error("Failed to parse leaderboard.json:", e);
+            leaderboard = {};
+        }
+    } else {
+        leaderboard = {};
+    }
+}
+loadLeaderboard();
+
+function saveLeaderboard() {
+    try {
+        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
+    } catch (e) {
+        console.error("Failed to save leaderboard.json:", e);
+    }
+}
+
+function recordScore(songId, playerName, pct, score) {
+    if (!songId || !playerName) return;
+    
+    if (!leaderboard[songId]) {
+        leaderboard[songId] = [];
+    }
+    
+    // Check if player already has an entry
+    const existingIndex = leaderboard[songId].findIndex(entry => entry.name === playerName);
+    
+    if (existingIndex !== -1) {
+        const existing = leaderboard[songId][existingIndex];
+        // Only update if current run has a higher completion percentage, or equal percentage but higher score
+        if (pct > existing.percent || (pct === existing.percent && score > existing.score)) {
+            leaderboard[songId][existingIndex] = {
+                name: playerName,
+                percent: pct,
+                score: score,
+                date: new Date().toLocaleDateString()
+            };
+        }
+    } else {
+        leaderboard[songId].push({
+            name: playerName,
+            percent: pct,
+            score: score,
+            date: new Date().toLocaleDateString()
+        });
+    }
+    
+    // Sort descending by percentage, then descending by score
+    leaderboard[songId].sort((a, b) => {
+        if (b.percent !== a.percent) return b.percent - a.percent;
+        return b.score - a.score;
+    });
+    
+    // Keep top 10 rankings
+    leaderboard[songId] = leaderboard[songId].slice(0, 10);
+    
+    saveLeaderboard();
+    broadcast({ type: 'leaderboardUpdate', songId, leaderboard: leaderboard[songId] });
+}
+
 // Get the list of all available songs in the songs/ directory
 function getSongsList() {
     const songsDir = path.join(__dirname, 'songs');
@@ -26,8 +95,6 @@ function getSongsList() {
                 const jsonPath = path.join(songsDir, file);
                 const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
                 const id = file.replace('.json', '');
-                
-                // Verify the corresponding MP3 file exists
                 const mp3Exists = fs.existsSync(path.join(songsDir, `${id}.mp3`));
                 
                 if (mp3Exists) {
@@ -58,7 +125,6 @@ const storage = multer.diskStorage({
         cb(null, path.join(__dirname, 'songs'));
     },
     filename: function (req, file, cb) {
-        // Clean filename (alphanumeric, dashes, underscores)
         const cleanedName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
         cb(null, cleanedName);
     }
@@ -116,6 +182,12 @@ app.delete('/api/songs/:id', (req, res) => {
             broadcast({ type: 'songSelected', songId: null, title: null });
         }
         
+        // Remove from local leaderboard DB too
+        if (leaderboard[id]) {
+            delete leaderboard[id];
+            saveLeaderboard();
+        }
+        
         broadcast({ type: 'songsUpdated' });
         res.json({ success: true, songs: getSongsList() });
     } catch (e) {
@@ -150,7 +222,7 @@ let selectedSong = null;
 let gameStartTime = 0;
 let gameInterval = null;
 let trackSegments = [];
-let trackTurnPoints = {}; // playerId -> array of precalculated absolute points
+let trackTurnPoints = {}; // playerId -> array of points
 let sharedCombo = 0;
 let gameState = 'idle'; // idle | starting | playing
 
@@ -206,6 +278,7 @@ wss.on('connection', (ws) => {
         id,
         color,
         spawnIndex,
+        name: '', // Set on registerName
         score: 0,
         combo: 0,
         alive: !isSpectator,
@@ -230,25 +303,48 @@ wss.on('connection', (ws) => {
         gameState
     }));
 
-    // Notify other players
-    broadcast({ type: 'playerJoined', player: players[id] });
-
     ws.on('message', (message) => {
         let data;
         try { data = JSON.parse(message); } catch (e) { return; }
 
         switch (data.type) {
+            case 'registerName': {
+                const p = players[id];
+                if (p) {
+                    p.name = data.name.trim() || `P${p.spawnIndex + 1}`;
+                    
+                    // Broadcast player joined only after name is registered
+                    broadcast({ type: 'playerJoined', player: p });
+                    
+                    // Send current leaderboard to this specific client if song is selected
+                    if (selectedSong) {
+                        ws.send(JSON.stringify({
+                            type: 'leaderboardUpdate',
+                            songId: selectedSong.id,
+                            leaderboard: leaderboard[selectedSong.id] || []
+                        }));
+                    }
+                }
+                break;
+            }
+            
             case 'selectSong': {
                 const songs = getSongsList();
                 const song = songs.find(s => s.id === data.songId);
                 if (song) {
                     selectedSong = song;
-                    // Load the track segments from JSON
                     try {
                         const jsonPath = path.join(__dirname, 'songs', `${song.id}.json`);
                         const songData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
                         trackSegments = songData.segments;
                         broadcast({ type: 'songSelected', songId: song.id, title: song.title });
+                        
+                        // Broadcast leaderboard for the newly selected song
+                        broadcast({
+                            type: 'leaderboardUpdate',
+                            songId: song.id,
+                            leaderboard: leaderboard[song.id] || []
+                        });
                     } catch (err) {
                         console.error("Failed to load song segments", err);
                     }
@@ -259,21 +355,18 @@ wss.on('connection', (ws) => {
             case 'startRequest': {
                 if (gameState !== 'idle' || !selectedSong) return;
                 
-                // Synchronized start sequence: 4 seconds delay
-                // 2 seconds zoom-out to zoom-in, 2 seconds count down
                 const startDelay = 4000;
                 gameStartTime = Date.now() + startDelay;
                 gameState = 'starting';
                 sharedCombo = 0;
                 
-                // Broadcast game state change
                 broadcast({ type: 'gameStateChange', gameState });
                 
-                // Precalculate trajectories for all players in this round
+                // Reset and precalculate paths for active players
                 trackTurnPoints = {};
                 for (const pid in players) {
                     const p = players[pid];
-                    p.spectator = false; // Everyone in lobby is active now
+                    p.spectator = false;
                     const pts = precalculatePathPoints(trackSegments, p.spawnIndex);
                     trackTurnPoints[pid] = pts;
                     
@@ -287,47 +380,44 @@ wss.on('connection', (ws) => {
                     p.trail = [{ x: p.x, y: p.y }];
                     p.anchor = { x: p.x, y: p.y, time: 0.0 };
                     p.deathTime = null;
+                    p.finished = false;
                 }
                 
                 broadcast({ type: 'startGame', startDelay });
                 
-                // Start the server authoritative update loop
                 if (gameInterval) clearInterval(gameInterval);
                 
                 setTimeout(() => {
                     gameState = 'playing';
                 }, startDelay);
                 
-                gameInterval = setInterval(updatePhysics, 40); // 25 Hz update loop
+                gameInterval = setInterval(updatePhysics, 40);
                 break;
             }
             
             case 'tap': {
                 if (gameState !== 'playing') return;
                 const p = players[id];
-                if (!p || !p.alive) return;
+                if (!p || !p.alive || p.spectator) return;
                 
                 const t = (Date.now() - gameStartTime) / 1000;
                 const turnPoints = trackTurnPoints[id];
                 if (!turnPoints) return;
                 
                 const nextTurn = turnPoints[p.turnIndex + 1];
-                if (!nextTurn) return; // End of track
+                if (!nextTurn) return;
                 
                 const diff = t - nextTurn.time;
                 const newDir = 1 - p.currentDir;
                 
-                // Check if tap timing is within tolerance (220ms) and direction is correct
                 if (Math.abs(diff) <= 0.22 && newDir === nextTurn.dir) {
                     p.turnIndex++;
                     p.currentDir = newDir;
-                    // Snap exactly to corner point to avoid drift
                     p.x = nextTurn.x;
                     p.y = nextTurn.y;
                     p.anchor = { x: p.x, y: p.y, time: nextTurn.time };
                     p.trail.push({ x: p.x, y: p.y });
                     
-                    // Score logic
                     const diffMs = Math.abs(diff) * 1000;
                     let scoreAdd = 100;
                     let judgment = "GOOD";
@@ -356,7 +446,6 @@ wss.on('connection', (ws) => {
                         judgment 
                     });
                 } else {
-                    // Turn immediately where they tapped (leads to crash out of corridor)
                     p.currentDir = newDir;
                     p.anchor = { x: p.x, y: p.y, time: t };
                     p.trail.push({ x: p.x, y: p.y });
@@ -368,22 +457,16 @@ wss.on('connection', (ws) => {
         }
     });
 
-    ws.onclose = () => {
-        // ...
-    };
-
     ws.on('close', () => {
         delete players[id];
         delete trackTurnPoints[id];
         broadcast({ type: 'playerLeft', id });
         
-        // Stop server loop if no active players are left
         const activePlayersCount = Object.values(players).filter(p => !p.spectator).length;
         if (activePlayersCount === 0 && gameInterval) {
             clearInterval(gameInterval);
             gameInterval = null;
             gameState = 'idle';
-            // Reset all remaining players to lobby status
             for (const pid in players) {
                 players[pid].spectator = false;
                 players[pid].alive = true;
@@ -407,16 +490,14 @@ function updatePhysics() {
     
     for (const id in players) {
         const p = players[id];
-        if (p.spectator) continue; // Skip spectators
+        if (p.spectator) continue;
         
         const turnPoints = trackTurnPoints[id];
-        
         if (!p || !turnPoints) continue;
         
         if (p.alive) {
             anyAlive = true;
             
-            // Calculate current position
             if (t >= 0) {
                 const elapsed = t - p.anchor.time;
                 const dist = elapsed * SPEED_PER_SEC;
@@ -425,33 +506,45 @@ function updatePhysics() {
                 p.x = p.anchor.x + dv.x * dist;
                 p.y = p.anchor.y + dv.y * dist;
                 
-                // Add to trail if moved
                 const lastTrail = p.trail[p.trail.length - 1];
                 if (!lastTrail || Math.hypot(p.x - lastTrail.x, p.y - lastTrail.y) > 4) {
                     p.trail.push({ x: p.x, y: p.y });
                 }
                 
-                // Check if they missed the next turn point (more than 300ms late)
+                // Missed turn point
                 const nextTurn = turnPoints[p.turnIndex + 1];
+                const totalTime = turnPoints[turnPoints.length - 1].time;
+                
                 if (nextTurn && t > nextTurn.time + 0.3) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
+                    
+                    const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                    recordScore(selectedSong.id, p.name, pct, p.score);
                 }
                 
-                // Check if they crashed into walls
-                if (t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints)) {
+                // Wall crash
+                if (p.alive && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints)) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
+                    
+                    const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                    recordScore(selectedSong.id, p.name, pct, p.score);
                 }
                 
-                // Check if they finished the track
-                const lastTurn = turnPoints[turnPoints.length - 1];
-                if (t >= lastTurn.time) {
-                    p.finished = true;
-                } else {
-                    allFinished = false;
+                // Finished level
+                if (p.alive) {
+                    const lastTurn = turnPoints[turnPoints.length - 1];
+                    if (t >= lastTurn.time) {
+                        if (!p.finished) {
+                            p.finished = true;
+                            recordScore(selectedSong.id, p.name, 100, p.score);
+                        }
+                    } else {
+                        allFinished = false;
+                    }
                 }
             } else {
                 allFinished = false;
@@ -459,7 +552,7 @@ function updatePhysics() {
         }
     }
     
-    // Broadcast positions to all clients
+    // Broadcast positions
     broadcast({
         type: 'playerUpdate',
         t,
@@ -467,6 +560,7 @@ function updatePhysics() {
             const p = players[id];
             acc[id] = {
                 id: p.id,
+                name: p.name,
                 x: p.x,
                 y: p.y,
                 alive: p.alive,
@@ -481,7 +575,6 @@ function updatePhysics() {
         }, {})
     });
     
-    // Check game over or complete
     if ((allFinished || !anyAlive) && t > 1.0) {
         clearInterval(gameInterval);
         gameInterval = null;
