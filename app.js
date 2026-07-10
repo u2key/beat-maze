@@ -369,27 +369,25 @@ const NOTE_FREQS = {
     'C4': 261.63, 'C5': 523.25
 };
 
+let nextScheduledMusicBeat = 0;
+let musicSchedulerTimer = null;
+
 function scheduleBackgroundMusic() {
     if (!isPlaying || !audioContext) return;
     
-    musicScheduler = setInterval(() => {
-        if (!isPlaying) {
-            clearInterval(musicScheduler);
-            return;
-        }
+    const now = audioContext.currentTime;
+    
+    while (true) {
+        const beatTime = beatToTime(nextScheduledMusicBeat, gameStartTime);
+        if (beatTime > now + 0.15) break; // lookahead 150ms
         
-        const currentBeat = timeToBeat(audioContext.currentTime, gameStartTime);
-        const beatFloor = Math.floor(currentBeat * 2) / 2;
-        
-        if (beatFloor > lastMusicBeat) {
-            lastMusicBeat = beatFloor;
-            
-            const bpm = getBPMAtBeat(currentBeat);
-            const beatTime = beatToTime(beatFloor, gameStartTime);
+        if (beatTime >= now - 0.01) {
+            const beatFloor = nextScheduledMusicBeat;
+            const bpm = getBPMAtBeat(beatFloor);
             const noteDuration = (60.0 / bpm) * 0.8;
             
             // Get pattern based on current BPM
-            const sectionBeat = Math.floor(currentBeat) % 4;
+            const sectionBeat = Math.floor(beatFloor) % 4;
             
             // Melody patterns
             const melodyNotes = [
@@ -414,19 +412,23 @@ function scheduleBackgroundMusic() {
                 playBassNote(NOTE_FREQS[bassNote], noteDuration * 2, beatTime);
             }
             
-            // Drums: Kick on beat 0 and 2, hihat on half beats
+            // Drums: Kick on full beats, hihat on half beats
             if (beatFloor % 1 === 0) {
                 playKickDrum(beatTime);
             } else if (bpm > 120) {
                 playHiHat(beatTime);
             }
         }
-    }, 50);
+        
+        nextScheduledMusicBeat += 0.5;
+    }
+    
+    musicSchedulerTimer = setTimeout(scheduleBackgroundMusic, 25);
 }
 
 function stopMusicPlayback() {
-    lastMusicBeat = -1;
-    if (musicScheduler) clearInterval(musicScheduler);
+    nextScheduledMusicBeat = 0;
+    if (musicSchedulerTimer) clearTimeout(musicSchedulerTimer);
 }
 
 // Schedule metronome clicks. We schedule ahead in real time.
