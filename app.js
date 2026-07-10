@@ -138,7 +138,7 @@ function initWebSocket() {
                     break;
                     
                 case 'leaderboardUpdate':
-                    if (data.songId === selectedSongId) {
+                    if (data.songId === selectedSongId && data.difficulty === selectedDifficulty) {
                         currentLeaderboard = data.leaderboard || [];
                         renderLeaderboard();
                     }
@@ -320,6 +320,12 @@ function renderSongsList() {
 }
 
 function renderLeaderboard() {
+    const leaderboardTitle = document.querySelector('#leaderboard-panel h3');
+    if (leaderboardTitle) {
+        const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : '★★★');
+        leaderboardTitle.textContent = `Leaderboard (${diffStars})`;
+    }
+    
     leaderboardList.innerHTML = '';
     
     if (!selectedSongId) {
