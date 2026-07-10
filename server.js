@@ -146,7 +146,10 @@ const uploadChunk = multer({ storage: memoryStorage });
 
 // Chunked upload endpoint
 app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res) => {
+    const logPath = path.join(__dirname, 'server.log');
+    
     if (!req.file) {
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] Error: No chunk uploaded in request.\n`);
         return res.status(400).json({ error: 'No chunk uploaded' });
     }
     
@@ -160,6 +163,8 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
     
     const tmpPath = path.join(__dirname, 'songs', `tmp_${uploadId}.mp3`);
     
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Received chunk ${idx + 1}/${total} for ${filename} (uploadId: ${uploadId})\n`);
+    
     try {
         // Append chunk buffer to the temp file
         fs.appendFileSync(tmpPath, req.file.buffer);
@@ -169,13 +174,15 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             const finalMp3Path = path.join(__dirname, 'songs', `${id}.mp3`);
             const finalJsonPath = path.join(__dirname, 'songs', `${id}.json`);
             
+            fs.appendFileSync(logPath, `[${new Date().toISOString()}] Finalizing file. Renaming temp file to ${finalMp3Path}\n`);
+            
             // Rename temp file to final location (overwrite if exists)
             if (fs.existsSync(finalMp3Path)) {
                 fs.unlinkSync(finalMp3Path);
             }
             fs.renameSync(tmpPath, finalMp3Path);
             
-            console.log(`Finished assembling ${filename}. Starting note generator in background...`);
+            fs.appendFileSync(logPath, `[${new Date().toISOString()}] Starting note generator in background...\n`);
             
             // Respond immediately to prevent gateway timeout
             res.json({ success: true, completed: true, status: 'processing' });
@@ -183,13 +190,13 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             // Run generator in background
             exec(`python3 generate_notes.py "${finalMp3Path}" "${finalJsonPath}"`, (error, stdout, stderr) => {
                 if (error) {
-                    console.error(`Error generating notes in background: ${error}`);
+                    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
                     fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
                     try { fs.unlinkSync(finalMp3Path); } catch(e) {}
                     return;
                 }
                 
-                console.log(`Successfully processed song in background: ${id}`);
+                fs.appendFileSync(logPath, `[${new Date().toISOString()}] Successfully processed song in background: ${id}\n`);
                 broadcast({ type: 'songsUpdated' });
             });
         } else {
@@ -197,7 +204,7 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             res.json({ success: true, completed: false, chunkIndex: idx });
         }
     } catch (e) {
-        console.error("Chunk upload error:", e);
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] Chunk upload exception: ${e.message}\n${e.stack}\n`);
         fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Chunk upload error: ${e.message}\n${e.stack}\n`);
         try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch(err) {}
         res.status(500).json({ error: e.message });
