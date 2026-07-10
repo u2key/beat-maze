@@ -1,5 +1,8 @@
 // --- DOM Elements ---
 const joinOverlay = document.getElementById('join-overlay');
+const usernameInput = document.getElementById('username-input');
+const joinBtn = document.getElementById('join-btn');
+
 const songSelection = document.getElementById('song-selection');
 const songsContainer = document.getElementById('songs-container');
 const downloadStatus = document.getElementById('download-status');
@@ -8,12 +11,13 @@ const retryBtn = document.getElementById('retry-btn');
 const gameoverOverlay = document.getElementById('gameover-overlay');
 const scoreDisplay = document.getElementById('score-display');
 const comboDisplay = document.getElementById('combo-display');
-const audioFileInput = document.getElementById('audio-file-input');
 const progressDisplay = document.getElementById('progress-display');
 const finalScoreEl = document.getElementById('final-score');
 const playersList = document.getElementById('players-list');
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
+const leaderboardList = document.getElementById('leaderboard-list');
+const audioFileInput = document.getElementById('audio-file-input');
 
 // --- Game Constants ---
 const DIR_VECS = [
@@ -48,6 +52,7 @@ let songList = [];
 let selectedSongId = null;
 let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
+let currentLeaderboard = [];
 
 let gameState = 'idle'; // idle | starting | playing | dead
 let alive = true;
@@ -70,7 +75,7 @@ window.addEventListener('resize', resizeCanvas);
 // --- WebSocket Setup ---
 function initWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${location.host}`);
+    ws = new WebSocket(`${protocol}//${location.host}${location.pathname}`);
     
     ws.onmessage = async (ev) => {
         try {
@@ -83,8 +88,6 @@ function initWebSocket() {
                     players = data.players;
                     selectedSongId = data.selectedSong;
                     gameState = data.gameState || 'idle';
-                    updatePlayersList();
-                    updateStartButtonText();
                     
                     // Retrieve list of songs from server
                     fetchSongsList();
@@ -104,6 +107,8 @@ function initWebSocket() {
                 case 'songSelected':
                     selectedSongId = data.songId;
                     downloadStatus.textContent = `Host selected song. Downloading...`;
+                    currentLeaderboard = [];
+                    renderLeaderboard();
                     await downloadSongData(data.songId);
                     break;
                     
@@ -111,11 +116,17 @@ function initWebSocket() {
                     fetchSongsList();
                     break;
                     
+                case 'leaderboardUpdate':
+                    if (data.songId === selectedSongId) {
+                        currentLeaderboard = data.leaderboard || [];
+                        renderLeaderboard();
+                    }
+                    break;
+                    
                 case 'gameStateChange':
                     gameState = data.gameState;
                     if (data.players) {
                         players = data.players;
-                        localPlayer = players[localId];
                         updatePlayersList();
                     }
                     updateStartButtonText();
@@ -160,12 +171,9 @@ function initWebSocket() {
                     break;
                     
                 case 'hit':
-                    // Play echo sounds for turns
-                    if (data.id !== localId) {
-                        playEcho();
-                    } else {
-                        // Play local perfect/great sound
-                        playLocalTurnFeedback(data.judgment);
+                    if (data.judgment === 'PERFECT' || data.judgment === 'GREAT' || data.judgment === 'GOOD') {
+                        if (data.id !== localId) playEcho();
+                        else playLocalTurnFeedback(data.judgment);
                     }
                     break;
             }
@@ -176,10 +184,36 @@ function initWebSocket() {
 }
 initWebSocket();
 
+// --- Join Lobby Username Logic ---
+function joinLobby() {
+    const name = usernameInput.value.trim();
+    if (!name) {
+        alert("Please enter a username.");
+        return;
+    }
+    
+    unlockAudio();
+    
+    // Register username with server
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'registerName', name }));
+    }
+    
+    joinOverlay.style.display = 'none';
+    songSelection.style.display = 'flex';
+}
+
+joinBtn.addEventListener('click', joinLobby);
+usernameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        joinLobby();
+    }
+});
+
 // --- Songs Management ---
 async function fetchSongsList() {
     try {
-        const res = await fetch('/api/songs');
+        const res = await fetch('./api/songs');
         songList = await res.json();
         renderSongsList();
         
@@ -198,7 +232,6 @@ function renderSongsList() {
         const div = document.createElement('div');
         div.className = `song-item ${selectedSongId === song.id ? 'selected' : ''}`;
         
-        // Left side info
         const textDiv = document.createElement('div');
         textDiv.innerHTML = `
             <div class="song-title">${song.title}</div>
@@ -206,7 +239,6 @@ function renderSongsList() {
         `;
         div.appendChild(textDiv);
         
-        // Right side delete button
         const deleteBtn = document.createElement('button');
         deleteBtn.innerHTML = '🗑️';
         deleteBtn.style.background = 'none';
@@ -225,7 +257,7 @@ function renderSongsList() {
             if (confirm(`Are you sure you want to delete ${song.title}?`)) {
                 downloadStatus.textContent = `Deleting song...`;
                 try {
-                    const res = await fetch(`/api/songs/${song.id}`, { method: 'DELETE' });
+                    const res = await fetch(`./api/songs/${song.id}`, { method: 'DELETE' });
                     const result = await res.json();
                     if (result.success) {
                         downloadStatus.textContent = "Song deleted.";
@@ -242,7 +274,6 @@ function renderSongsList() {
         div.appendChild(deleteBtn);
         
         div.addEventListener('click', () => {
-            // Select song on server
             if (ws && ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'selectSong', songId: song.id }));
             }
@@ -251,42 +282,43 @@ function renderSongsList() {
     });
 }
 
-// Upload file handler (auto-processes through python note generator)
-audioFileInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+function renderLeaderboard() {
+    leaderboardList.innerHTML = '';
     
-    const formData = new FormData();
-    formData.append('audio', file);
-    
-    downloadStatus.textContent = "Uploading song to server...";
-    startGameBtn.style.display = 'none';
-    
-    try {
-        const res = await fetch('/api/songs/upload', {
-            method: 'POST',
-            body: formData
-        });
-        const result = await res.json();
-        if (result.success) {
-            downloadStatus.textContent = "Processing complete! Song added.";
-        } else {
-            downloadStatus.textContent = result.error || "Upload failed.";
-        }
-    } catch(err) {
-        downloadStatus.textContent = "Upload failed.";
-        console.error(err);
+    if (!selectedSongId) {
+        leaderboardList.innerHTML = `<div style="color: #b0bec5; font-style: italic; text-align: center; margin-top: 40px;">Select a song to load rankings</div>`;
+        return;
     }
     
-    // Reset file input
-    audioFileInput.value = '';
-});
+    if (currentLeaderboard.length === 0) {
+        leaderboardList.innerHTML = `<div style="color: #b0bec5; font-style: italic; text-align: center; margin-top: 40px;">No rankings yet. Be the first!</div>`;
+        return;
+    }
+    
+    currentLeaderboard.forEach((entry, idx) => {
+        const div = document.createElement('div');
+        let rankClass = '';
+        if (idx === 0) rankClass = 'rank-1';
+        else if (idx === 1) rankClass = 'rank-2';
+        else if (idx === 2) rankClass = 'rank-3';
+        
+        div.className = `leaderboard-item ${rankClass}`;
+        div.innerHTML = `
+            <div class="rank-num">${idx + 1}</div>
+            <div class="rank-name">${entry.name}</div>
+            <div style="text-align: right;">
+                <div class="rank-pct">${entry.percent}%</div>
+                <div class="rank-score">Score: ${entry.score}</div>
+            </div>
+        `;
+        leaderboardList.appendChild(div);
+    });
+}
 
 async function downloadSongData(songId) {
     const song = songList.find(s => s.id === songId);
     if (!song) return;
     
-    // Highlight selected song
     document.querySelectorAll('.song-item').forEach(item => {
         const title = item.querySelector('.song-title').textContent;
         item.classList.toggle('selected', title === song.title);
@@ -315,20 +347,49 @@ async function downloadSongData(songId) {
 }
 
 function updateStartButtonText() {
-    const isSpectator = localPlayer && localPlayer.spectator;
+    const localP = players[localId];
+    const isSpectator = localP && localP.spectator;
     if (isSpectator || gameState !== 'idle') {
         startGameBtn.textContent = "SPECTATE";
     } else {
         startGameBtn.textContent = "START GAME";
     }
     
-    // Show start button if selected song is fully downloaded
     if (loadedTrackData && loadedAudioBuffer) {
         startGameBtn.style.display = 'block';
     } else {
         startGameBtn.style.display = 'none';
     }
 }
+
+// Upload file handler
+audioFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('audio', file);
+    
+    downloadStatus.textContent = "Uploading song to server...";
+    startGameBtn.style.display = 'none';
+    
+    try {
+        const res = await fetch('./api/songs/upload', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await res.json();
+        if (result.success) {
+            downloadStatus.textContent = "Processing complete! Song added.";
+        } else {
+            downloadStatus.textContent = result.error || "Upload failed.";
+        }
+    } catch(err) {
+        downloadStatus.textContent = "Upload failed.";
+        console.error(err);
+    }
+    audioFileInput.value = '';
+});
 
 // --- Audio Controls & Synth ---
 function unlockAudio() {
@@ -406,42 +467,26 @@ function playCrashSound() {
 }
 
 // --- Game Loop and Visuals ---
-function precalculatePathPoints(segments, spawnIndex) {
-    const spawn = SPAWN_OFFSETS[spawnIndex % SPAWN_OFFSETS.length];
-    const points = [];
-    let x = spawn.x;
-    let y = spawn.y;
-    
-    points.push({ time: 0.0, x, y, dir: segments[0].dir });
-    
-    for (let i = 0; i < segments.length - 1; i++) {
-        const curr = segments[i];
-        const next = segments[i+1];
-        const dur = next.time - curr.time;
-        const dist = dur * SPEED_PER_SEC;
-        const dv = DIR_VECS[curr.dir];
-        x += dv.x * dist;
-        y += dv.y * dist;
-        points.push({ time: next.time, x, y, dir: next.dir });
-    }
-    return points;
-}
-
 function updatePlayersList() {
     playersList.innerHTML = '';
     // Local
-    const local = document.createElement('div');
-    local.className = 'player-tag';
-    local.innerHTML = `<div class="player-dot" style="background:${localColor}"></div>You`;
-    playersList.appendChild(local);
+    const localP = players[localId];
+    if (localP && localP.name) {
+        const local = document.createElement('div');
+        local.className = 'player-tag';
+        local.innerHTML = `<div class="player-dot" style="background:${localColor}"></div>${localP.name} (You)`;
+        playersList.appendChild(local);
+    }
     // Remotes
     for (const id in players) {
         if (id !== localId) {
             const rp = players[id];
-            const el = document.createElement('div');
-            el.className = 'player-tag';
-            el.innerHTML = `<div class="player-dot" style="background:${rp.color}"></div>P${rp.spawnIndex + 1}`;
-            playersList.appendChild(el);
+            if (rp.name) {
+                const el = document.createElement('div');
+                el.className = 'player-tag';
+                el.innerHTML = `<div class="player-dot" style="background:${rp.color}"></div>${rp.name}`;
+                playersList.appendChild(el);
+            }
         }
     }
 }
@@ -451,9 +496,9 @@ function handleStartGame(startDelayMs) {
     gameoverOverlay.style.display = 'none';
     songSelection.style.display = 'none';
     
-    const isSpectator = localPlayer && localPlayer.spectator;
+    const localP = players[localId];
+    const isSpectator = localP && localP.spectator;
     
-    // Reset locals
     alive = !isSpectator;
     score = 0;
     combo = 0;
@@ -465,7 +510,6 @@ function handleStartGame(startDelayMs) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(loadedTrackData.segments, p.spawnIndex);
         
-        // Reset player objects
         p.alive = !p.spectator;
         p.score = 0;
         p.combo = 0;
@@ -546,11 +590,9 @@ function updateHUD(t) {
 function handleTap() {
     if (gameState !== 'playing' || !alive) return;
     
-    // Spectators cannot tap/turn
-    const isSpectator = localPlayer && localPlayer.spectator;
-    if (isSpectator) return;
+    const localP = players[localId];
+    if (localP && localP.spectator) return;
     
-    // Direct tap reporting - timing validation is managed by the server
     if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'tap' }));
     }
@@ -571,12 +613,6 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-joinOverlay.addEventListener('pointerdown', () => {
-    unlockAudio();
-    joinOverlay.style.display = 'none';
-    songSelection.style.display = 'flex';
-});
-
 retryBtn.addEventListener('click', () => {
     gameoverOverlay.style.display = 'none';
     songSelection.style.display = 'flex';
@@ -594,7 +630,6 @@ function getSmoothPlayerPosition(p, t) {
         return { x: p.x, y: p.y };
     }
     
-    // Project position forward from the player's last server-validated anchor point
     const elapsed = t - p.anchor.time;
     const dist = elapsed * SPEED_PER_SEC;
     const dv = DIR_VECS[p.currentDir];
@@ -603,6 +638,27 @@ function getSmoothPlayerPosition(p, t) {
         x: p.anchor.x + dv.x * dist,
         y: p.anchor.y + dv.y * dist
     };
+}
+
+function precalculatePathPoints(segments, spawnIndex) {
+    const spawn = SPAWN_OFFSETS[spawnIndex % SPAWN_OFFSETS.length];
+    const points = [];
+    let x = spawn.x;
+    let y = spawn.y;
+    
+    points.push({ time: 0.0, x, y, dir: segments[0].dir });
+    
+    for (let i = 0; i < segments.length - 1; i++) {
+        const curr = segments[i];
+        const next = segments[i+1];
+        const dur = next.time - curr.time;
+        const dist = dur * SPEED_PER_SEC;
+        const dv = DIR_VECS[curr.dir];
+        x += dv.x * dist;
+        y += dv.y * dist;
+        points.push({ time: next.time, x, y, dir: next.dir });
+    }
+    return points;
 }
 
 // --- Main Loop ---
@@ -620,14 +676,12 @@ function gameLoop() {
         }
     }
     
-    // Smooth position projection for rendering
     let localPos = { x: 0, y: 0 };
     const localP = players[localId];
     
     if (localP && !localP.spectator && localP.alive) {
         localPos = getSmoothPlayerPosition(localP, t);
     } else {
-        // Spectating or dead: follow the first alive active player
         let followTarget = null;
         for (const id in players) {
             const p = players[id];
@@ -639,7 +693,6 @@ function gameLoop() {
         if (followTarget) {
             localPos = getSmoothPlayerPosition(followTarget, t);
         } else {
-            // Fallback to local spawn point
             const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : { x: 0, y: 0 };
             localPos = { x: startPt.x, y: startPt.y };
         }
@@ -662,13 +715,11 @@ function render(t, camX, camY) {
         const progress = Math.min(1, elapsed / zoomDuration);
         const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
         
-        // Zoom-in animation showing absolute start area
         camScale = 0.3 + 0.7 * ease;
         const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : { x: 0, y: 0 };
         camX = 0 + (startPt.x - 0) * ease;
         camY = 0 + (startPt.y - 0) * ease;
         
-        // Render Countdown UI
         const remaining = gameStartTime - audioContext.currentTime;
         if (remaining > 0) {
             const countNum = Math.ceil(remaining);
@@ -687,7 +738,7 @@ function render(t, camX, camY) {
     ctx.scale(camScale, camScale);
     ctx.translate(-camX, -camY);
     
-    // 1. Draw corridors for all players
+    // 1. Draw corridors
     for (const pid in players) {
         const pts = precalculatedTracks[pid];
         if (!pts) continue;
@@ -703,7 +754,6 @@ function render(t, camX, camY) {
         }
         ctx.stroke();
         
-        // Border walls
         ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
         ctx.strokeStyle = '#2a2a4a';
         ctx.beginPath();
@@ -713,7 +763,6 @@ function render(t, camX, camY) {
         }
         ctx.stroke();
         
-        // Road core
         ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
         ctx.strokeStyle = '#12122a';
         ctx.beginPath();
@@ -724,7 +773,7 @@ function render(t, camX, camY) {
         ctx.stroke();
     }
     
-    // 2. Draw turn diamonds for the active song
+    // 2. Draw turn diamonds
     if (loadedTrackData && precalculatedTracks[localId]) {
         const pts = precalculatedTracks[localId];
         const localP = players[localId];
@@ -743,7 +792,7 @@ function render(t, camX, camY) {
         }
     }
     
-    // 3. Draw trails and dots of other players
+    // 3. Draw trails and player dots
     for (const id in players) {
         const p = players[id];
         const pathData = precalculatedTracks[id];
@@ -751,7 +800,6 @@ function render(t, camX, camY) {
         
         const pos = getSmoothPlayerPosition(p, t);
         
-        // Draw server-driven trails
         if (p.trail && p.trail.length >= 2) {
             ctx.strokeStyle = p.color;
             ctx.lineWidth = id === localId ? 6 : 4;
@@ -763,13 +811,11 @@ function render(t, camX, camY) {
             for (let i = 1; i < p.trail.length; i++) {
                 ctx.lineTo(p.trail[i].x, p.trail[i].y);
             }
-            // Extend trail smoothly to the predicted position
             ctx.lineTo(pos.x, pos.y);
             ctx.stroke();
             ctx.globalAlpha = 1.0;
         }
         
-        // Draw player dot
         if (p.alive) {
             ctx.fillStyle = p.color;
             ctx.shadowColor = p.color;
@@ -778,8 +824,19 @@ function render(t, camX, camY) {
             ctx.arc(pos.x, pos.y, id === localId ? 9 : 6, 0, Math.PI * 2);
             ctx.fill();
             ctx.shadowBlur = 0;
+            
+            // Draw player name above the circle
+            if (p.name) {
+                ctx.save();
+                ctx.fillStyle = '#fff';
+                ctx.font = '700 12px Outfit';
+                ctx.textAlign = 'center';
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 4;
+                ctx.fillText(p.name, pos.x, pos.y - 15);
+                ctx.restore();
+            }
         } else {
-            // Draw death marker
             ctx.fillStyle = '#ff5252';
             ctx.globalAlpha = 0.5;
             ctx.beginPath();
