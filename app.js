@@ -378,6 +378,17 @@ audioFileInput.addEventListener('change', async (e) => {
             method: 'POST',
             body: formData
         });
+        
+        if (!res.ok) {
+            if (res.status === 413) {
+                downloadStatus.textContent = "Upload failed: File is too large! Please upload a smaller MP3 (under 2MB).";
+            } else {
+                downloadStatus.textContent = `Upload failed: Server error (Status ${res.status})`;
+            }
+            console.error("Upload error details:", res.status, res.statusText);
+            return;
+        }
+        
         const result = await res.json();
         if (result.success) {
             downloadStatus.textContent = "Processing complete! Song added.";
@@ -385,7 +396,7 @@ audioFileInput.addEventListener('change', async (e) => {
             downloadStatus.textContent = result.error || "Upload failed.";
         }
     } catch(err) {
-        downloadStatus.textContent = "Upload failed.";
+        downloadStatus.textContent = "Upload failed. Connection error.";
         console.error(err);
     }
     audioFileInput.value = '';
