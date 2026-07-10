@@ -180,6 +180,7 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             exec(`python3 generate_notes.py "${finalMp3Path}" "${finalJsonPath}"`, (error, stdout, stderr) => {
                 if (error) {
                     console.error(`Error generating notes: ${error}`);
+                    fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
                     try { fs.unlinkSync(finalMp3Path); } catch(e) {}
                     return res.status(500).json({ error: 'Failed to process audio and generate notes.' });
                 }
@@ -194,8 +195,9 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
         }
     } catch (e) {
         console.error("Chunk upload error:", e);
+        fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Chunk upload error: ${e.message}\n${e.stack}\n`);
         try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch(err) {}
-        res.status(500).json({ error: "Failed to write audio chunk." });
+        res.status(500).json({ error: e.message });
     }
 });
 
