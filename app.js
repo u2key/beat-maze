@@ -66,6 +66,7 @@ let totalDuration = 0;
 let gameStartTime = 0; 
 let zoomStartTime = 0;
 let drawReqId;
+let localPredictionActive = false;
 
 // Canvas resizing
 function resizeCanvas() {
@@ -166,7 +167,7 @@ function initWebSocket() {
                     break;
                 }
                     
-                case 'playerUpdate':
+                case 'playerUpdate': {
                     if (gameState === 'idle') break;
                     
                     const serverPlayers = data.players;
@@ -174,7 +175,27 @@ function initWebSocket() {
                     
                     for (const pid in serverPlayers) {
                         if (!players[pid]) players[pid] = {};
-                        Object.assign(players[pid], serverPlayers[pid]);
+                        
+                        if (pid === localId && localPredictionActive) {
+                            // Protect locally predicted state until server catches up
+                            const serverData = serverPlayers[pid];
+                            const serverTI = serverData.turnIndex ?? 0;
+                            const localTI = players[pid].turnIndex ?? 0;
+                            
+                            if (serverTI >= localTI) {
+                                // Server confirmed prediction - accept full state
+                                Object.assign(players[pid], serverData);
+                                localPredictionActive = false;
+                            } else {
+                                // Server hasn't processed tap yet - only update authoritative fields
+                                players[pid].alive = serverData.alive;
+                                players[pid].score = serverData.score;
+                                players[pid].combo = serverData.combo;
+                                players[pid].finished = serverData.finished;
+                            }
+                        } else {
+                            Object.assign(players[pid], serverPlayers[pid]);
+                        }
                     }
                     
                     const localP = serverPlayers[localId];
@@ -185,6 +206,7 @@ function initWebSocket() {
                         updateHUD(serverT);
                     }
                     break;
+                }
                     
                 case 'playerDead':
                     if (players[data.id]) players[data.id].alive = false;
@@ -194,9 +216,15 @@ function initWebSocket() {
                     break;
                     
                 case 'hit':
-                    if (data.judgment === 'PERFECT' || data.judgment === 'GREAT' || data.judgment === 'GOOD') {
-                        if (data.id !== localId) playEcho();
-                        else playLocalTurnFeedback(data.judgment);
+                    if (data.id === localId) {
+                        if (data.judgment === 'MISS') {
+                            // Server rejected tap - clear prediction so next playerUpdate corrects state
+                            localPredictionActive = false;
+                        } else {
+                            playLocalTurnFeedback(data.judgment);
+                        }
+                    } else {
+                        if (data.judgment !== 'MISS') playEcho();
                     }
                     break;
             }
@@ -569,6 +597,7 @@ function updatePlayersList() {
 
 function handleStartGame(startDelayMs, serverSegments) {
     unlockAudio();
+    localPredictionActive = false;
     gameoverOverlay.style.display = 'none';
     songSelection.style.display = 'none';
     
@@ -589,6 +618,7 @@ function handleStartGame(startDelayMs, serverSegments) {
         p.alive = !p.spectator;
         p.score = 0;
         p.combo = 0;
+        p.turnIndex = 0;
         p.finished = false;
         p.x = precalculatedTracks[id][0].x;
         p.y = precalculatedTracks[id][0].y;
@@ -634,6 +664,7 @@ function handleStartGame(startDelayMs, serverSegments) {
 
 function stopGame() {
     gameState = 'idle';
+    localPredictionActive = false;
     if (audioSource) {
         try { audioSource.stop(); } catch(e) {}
         audioSource = null;
@@ -669,10 +700,31 @@ function handleTap() {
     const localP = players[localId];
     if (localP && localP.spectator) return;
     
+    const tapTime = audioContext.currentTime - gameStartTime;
+    const calibratedTime = tapTime + calibrationOffset;
+    
+    // Client-side prediction: immediately update visual state for responsiveness
+    // This eliminates the RTT delay between tapping and seeing the direction change
+    const pts = precalculatedTracks[localId];
+    if (pts && localP) {
+        const nextIdx = (localP.turnIndex ?? 0) + 1;
+        if (nextIdx < pts.length) {
+            const nextTurn = pts[nextIdx];
+            const diff = calibratedTime - nextTurn.time;
+            if (Math.abs(diff) <= 0.22) {
+                // Predict successful turn - update local state immediately
+                localP.turnIndex = nextIdx;
+                localP.currentDir = nextTurn.dir;
+                localP.x = nextTurn.x;
+                localP.y = nextTurn.y;
+                localP.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
+                localP.trail.push({ x: nextTurn.x, y: nextTurn.y });
+                localPredictionActive = true;
+            }
+        }
+    }
+    
     if (ws && ws.readyState === 1) {
-        // Send the local music tap time with calibration offset applied
-        const tapTime = audioContext.currentTime - gameStartTime;
-        const calibratedTime = tapTime + calibrationOffset;
         ws.send(JSON.stringify({ type: 'tap', time: calibratedTime }));
     }
 }

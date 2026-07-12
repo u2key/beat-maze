@@ -661,6 +661,7 @@ function updatePhysics() {
                 alive: p.alive,
                 score: p.score,
                 combo: p.combo,
+                turnIndex: p.turnIndex,
                 currentDir: p.currentDir,
                 trail: p.trail,
                 finished: p.finished,

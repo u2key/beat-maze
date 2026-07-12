@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import librosa
+import numpy as np
 import math
 
 def snap_to_grid(t, beats, tempo):
@@ -62,11 +63,26 @@ def analyze_mp3(file_path, output_json_path):
     # Get beat times from frames
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     
-    print("Calculating onset strength envelope...")
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    print("Separating percussive and harmonic components (HPSS)...")
+    y_harmonic, y_percussive = librosa.effects.hpss(y)
+    
+    print("Calculating percussion-weighted onset strength envelope...")
+    # Use percussive component primarily to prioritize drum hits and rhythmic attacks
+    onset_env_perc = librosa.onset.onset_strength(y=y_percussive, sr=sr)
+    onset_env_full = librosa.onset.onset_strength(y=y, sr=sr)
+    
+    # Normalize and blend: 70% percussive + 30% full spectrum
+    # This ensures drum/percussion onsets dominate while keeping important melodic accents
+    perc_max = np.max(onset_env_perc)
+    full_max = np.max(onset_env_full)
+    if perc_max > 0 and full_max > 0:
+        onset_env = 0.7 * (onset_env_perc / perc_max) + 0.3 * (onset_env_full / full_max)
+    elif perc_max > 0:
+        onset_env = onset_env_perc
+    else:
+        onset_env = onset_env_full
     
     print("Detecting precise onset peaks (with backtracking)...")
-    # Using backtrack=True to snap onset detections to local energy minima for maximum timing accuracy
     onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=True)
     raw_onset_times = librosa.frames_to_time(onset_frames, sr=sr)
     
