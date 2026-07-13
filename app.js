@@ -1099,8 +1099,8 @@ function render(t, camX, camY) {
             ctx.beginPath();
             ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
             ctx.fill();
-            ctx.globalAlpha = 1.0;
         }
+    }
     // Render judgment popups (in world space)
     const nowTimeMs = Date.now();
     judgmentPopups = judgmentPopups.filter(pop => nowTimeMs - pop.createdAt < pop.duration);
