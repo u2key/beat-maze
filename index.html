@@ -159,25 +159,127 @@
             box-shadow: 0 15px 35px rgba(255,64,129,0.45);
         }
 
-        /* --- Game Over Overlay --- */
-        #gameover-overlay {
+        /* --- Results Overlay --- */
+        #results-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.75); z-index: 300;
-            display: none; flex-direction: column; align-items: center; justify-content: center;
+            background: rgba(10, 10, 15, 0.85);
+            backdrop-filter: blur(12px);
+            z-index: 300;
+            display: none; align-items: center; justify-content: center;
+            font-family: 'Outfit', sans-serif;
+            animation: fadeIn 0.4s ease-out;
         }
-        #gameover-overlay h2 {
-            font-size: 3.5rem; font-weight: 900; color: #ff5252;
-            text-shadow: 0 0 30px rgba(255,82,82,0.6);
+        .results-card {
+            background: rgba(20, 20, 30, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+            border-radius: 24px;
+            padding: 40px;
+            width: 480px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            animation: scaleUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         }
-        #gameover-overlay .final-score {
-            font-size: 2rem; color: #ffeb3b; margin-top: 15px;
+        #results-title {
+            font-size: 2.8rem; font-weight: 900; margin: 0;
+            letter-spacing: 2px;
+            text-transform: uppercase;
         }
-        #gameover-overlay button {
-            margin-top: 30px; padding: 15px 40px; font-size: 1.2rem;
-            font-family: 'Outfit', sans-serif; font-weight: 700;
-            background: linear-gradient(45deg, #1e88e5, #00e676);
+        .clear-title {
+            color: #00e676;
+            text-shadow: 0 0 20px rgba(0,230,118,0.4);
+        }
+        .crash-title {
+            color: #ff1744;
+            text-shadow: 0 0 20px rgba(255,23,68,0.4);
+        }
+        .results-stats-row {
+            display: flex;
+            justify-content: space-around;
+            width: 100%;
+            margin: 25px 0;
+            gap: 12px;
+        }
+        .results-stat-box {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 12px 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #90a4ae;
+            font-weight: 600;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+        .stat-value.highlight {
+            color: #ffeb3b;
+            text-shadow: 0 0 10px rgba(255,235,59,0.3);
+        }
+        .results-details-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            width: 100%;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            padding: 16px 12px;
+            margin-bottom: 25px;
+            border: 1px solid rgba(255,255,255,0.02);
+        }
+        .details-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .details-item .lbl {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .details-item .val {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+        #results-close-btn {
+            padding: 14px 40px; font-size: 1.1rem;
+            font-weight: 700;
+            background: linear-gradient(45deg, #2979ff, #00e676);
             color: white; border: none; border-radius: 50px; cursor: pointer;
-            text-transform: uppercase; letter-spacing: 2px;
+            text-transform: uppercase; letter-spacing: 1.5px;
+            box-shadow: 0 6px 20px rgba(0,230,118,0.25);
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+        #results-close-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,230,118,0.4);
+            filter: brightness(1.1);
+        }
+        #results-close-btn:active {
+            transform: translateY(0);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes scaleUp {
+            from { transform: scale(0.9); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
         }
 
         /* --- Players List --- */
@@ -285,10 +387,37 @@
 
     <div id="players-list"></div>
 
-    <div id="gameover-overlay">
-        <h2>GAME OVER</h2>
-        <div class="final-score" id="final-score">Score: 0</div>
-        <button id="retry-btn">Back to Lobby</button>
+    <div id="results-overlay" style="display: none;">
+        <div class="results-card">
+            <h2 id="results-title">STAGE CLEAR</h2>
+            <div id="results-song-title" style="font-size: 1.2rem; color: #b0bec5; margin-top: 5px; font-weight: 500;">Song Name</div>
+            <div id="results-diff" style="font-size: 1rem; margin-top: 5px; font-weight: 700; text-transform: uppercase;">Difficulty</div>
+            
+            <div class="results-stats-row">
+                <div class="results-stat-box">
+                    <div class="stat-label">SCORE</div>
+                    <div class="stat-value highlight" id="results-score">0</div>
+                </div>
+                <div class="results-stat-box">
+                    <div class="stat-label">PROGRESS</div>
+                    <div class="stat-value" id="results-progress">0%</div>
+                </div>
+                <div class="results-stat-box">
+                    <div class="stat-label">MAX COMBO</div>
+                    <div class="stat-value" id="results-max-combo" style="color: #00e5ff;">0</div>
+                </div>
+            </div>
+
+            <div class="results-details-grid">
+                <div class="details-item"><span class="lbl" style="color: #00e5ff;">Excellent</span><span class="val" id="results-excellent">0</span></div>
+                <div class="details-item"><span class="lbl" style="color: #00e676;">Good</span><span class="val" id="results-good">0</span></div>
+                <div class="details-item"><span class="lbl" style="color: #ffeb3b;">Fast</span><span class="val" id="results-fast">0</span></div>
+                <div class="details-item"><span class="lbl" style="color: #ff9100;">Late</span><span class="val" id="results-late">0</span></div>
+                <div class="details-item"><span class="lbl" style="color: #ff1744;">Miss</span><span class="val" id="results-miss">0</span></div>
+            </div>
+
+            <button id="results-close-btn">Back to Lobby</button>
+        </div>
     </div>
 
     <script src="app.js"></script>

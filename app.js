@@ -7,8 +7,21 @@ const songSelection = document.getElementById('song-selection');
 const songsContainer = document.getElementById('songs-container');
 const downloadStatus = document.getElementById('download-status');
 const startGameBtn = document.getElementById('start-game-btn');
-const retryBtn = document.getElementById('retry-btn');
-const gameoverOverlay = document.getElementById('gameover-overlay');
+
+const resultsOverlay = document.getElementById('results-overlay');
+const resultsTitle = document.getElementById('results-title');
+const resultsSongTitle = document.getElementById('results-song-title');
+const resultsDiff = document.getElementById('results-diff');
+const resultsScore = document.getElementById('results-score');
+const resultsProgress = document.getElementById('results-progress');
+const resultsMaxCombo = document.getElementById('results-max-combo');
+const resultsExcellent = document.getElementById('results-excellent');
+const resultsGood = document.getElementById('results-good');
+const resultsFast = document.getElementById('results-fast');
+const resultsLate = document.getElementById('results-late');
+const resultsMiss = document.getElementById('results-miss');
+const resultsCloseBtn = document.getElementById('results-close-btn');
+
 const scoreDisplay = document.getElementById('score-display');
 const comboDisplay = document.getElementById('combo-display');
 const progressDisplay = document.getElementById('progress-display');
@@ -65,6 +78,9 @@ let alive = true;
 let score = 0;
 let combo = 0;
 let totalDuration = 0;
+let judgmentCounts = { excellent: 0, Good: 0, Fast: 0, Late: 0, MISS: 0 };
+let maxCombo = 0;
+let finished = false;
 
 let gameStartTime = 0; 
 let zoomStartTime = 0;
@@ -257,7 +273,6 @@ function initWebSocket() {
                     if (gameState === 'idle') {
                         // Match ended: return to song selection automatically
                         songSelection.style.display = 'flex';
-                        gameoverOverlay.style.display = 'none';
                         stopGame();
                     }
                     break;
@@ -309,7 +324,14 @@ function initWebSocket() {
                         alive = localP.alive;
                         score = localP.score;
                         combo = localP.combo;
+                        if (combo > maxCombo) {
+                            maxCombo = combo;
+                        }
                         updateHUD(serverT);
+                        
+                        if (localP.finished && !finished) {
+                            triggerClear();
+                        }
                     }
                     break;
                 }
@@ -323,13 +345,19 @@ function initWebSocket() {
                     
                 case 'hit':
                     if (data.id === localId) {
-                        if (data.judgment === 'MISS') {
+                        const judgment = data.judgment;
+                        if (judgment === 'MISS') {
                             // Server rejected tap - clear prediction so next playerUpdate corrects state
                             localPredictionActive = false;
                             showJudgmentPopup('MISS', getJudgmentColor('MISS'), data.x, data.y);
+                            judgmentCounts.MISS++;
                         } else {
-                            playLocalTurnFeedback(data.judgment, data.turnIndex);
-                            showJudgmentPopup(data.judgment, getJudgmentColor(data.judgment), data.x, data.y);
+                            playLocalTurnFeedback(judgment, data.turnIndex);
+                            showJudgmentPopup(judgment, getJudgmentColor(judgment), data.x, data.y);
+                            if (judgment === 'excellent') judgmentCounts.excellent++;
+                            else if (judgment === 'Good') judgmentCounts.Good++;
+                            else if (judgment === 'Fast') judgmentCounts.Fast++;
+                            else if (judgment === 'Late') judgmentCounts.Late++;
                         }
                     } else {
                         if (data.judgment !== 'MISS' && data.judgment !== 'Fast' && data.judgment !== 'Late') playEcho();
@@ -764,7 +792,7 @@ function updatePlayersList() {
 function handleStartGame(startDelayMs, serverSegments) {
     unlockAudio();
     localPredictionActive = false;
-    gameoverOverlay.style.display = 'none';
+    resultsOverlay.style.display = 'none';
     songSelection.style.display = 'none';
     
     const localP = players[localId];
@@ -773,6 +801,9 @@ function handleStartGame(startDelayMs, serverSegments) {
     alive = !isSpectator;
     score = 0;
     combo = 0;
+    maxCombo = 0;
+    finished = false;
+    judgmentCounts = { excellent: 0, Good: 0, Fast: 0, Late: 0, MISS: 0 };
     updateHUD(0);
     
     // Precalculate paths
@@ -835,7 +866,7 @@ function handleStartGame(startDelayMs, serverSegments) {
 function handleStartSpectating(elapsedT, serverSegments) {
     unlockAudio();
     localPredictionActive = false;
-    gameoverOverlay.style.display = 'none';
+    resultsOverlay.style.display = 'none';
     songSelection.style.display = 'none';
     
     const localP = players[localId];
@@ -896,13 +927,79 @@ function triggerDeath() {
     alive = false;
     playCrashSound();
     gameState = 'dead';
-    finalScoreEl.textContent = `Score: ${score}`;
     
     setTimeout(() => {
-        gameoverOverlay.style.display = 'flex';
+        showResultsScreen(false);
         songSelection.style.display = 'flex';
         stopGame();
     }, 800);
+}
+
+function triggerClear() {
+    if (finished) return;
+    finished = true;
+    gameState = 'finished';
+    
+    setTimeout(() => {
+        showResultsScreen(true);
+        songSelection.style.display = 'flex';
+        stopGame();
+    }, 800);
+}
+
+function showResultsScreen(isClear) {
+    resultsTitle.textContent = isClear ? "STAGE CLEAR" : "STAGE CRASHED";
+    resultsTitle.className = isClear ? "clear-title" : "crash-title";
+    
+    const song = songList.find(s => s.id === selectedSongId);
+    resultsSongTitle.textContent = song ? (song.title || selectedSongId) : (selectedSongId || "Unknown Song");
+    
+    const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : (selectedDifficulty === 3 ? '★★★' : '★★★★★'));
+    resultsDiff.textContent = `Difficulty: ${diffStars}`;
+    resultsDiff.style.color = (selectedDifficulty === 5) ? '#ff1744' : '#00e676';
+    
+    // Animate score count-up!
+    resultsScore.textContent = "0";
+    let currentScoreVal = 0;
+    const targetScore = score;
+    const duration = 1000; // 1s
+    const startTime = performance.now();
+    
+    function animateScore(now) {
+        const elapsed = now - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const easeProgress = progress * (2 - progress);
+        currentScoreVal = Math.floor(easeProgress * targetScore);
+        resultsScore.textContent = currentScoreVal.toLocaleString();
+        
+        if (progress < 1) {
+            requestAnimationFrame(animateScore);
+        } else {
+            resultsScore.textContent = targetScore.toLocaleString();
+        }
+    }
+    requestAnimationFrame(animateScore);
+    
+    // Progress %
+    let progressVal = 100;
+    if (!isClear) {
+        const t = (audioContext.currentTime - gameStartTime);
+        const totalTime = precalculatedTracks[localId] 
+            ? precalculatedTracks[localId][precalculatedTracks[localId].length - 1].time 
+            : 1;
+        progressVal = Math.min(99, Math.max(0, Math.floor((t / totalTime) * 100)));
+    }
+    resultsProgress.textContent = `${progressVal}%`;
+    resultsMaxCombo.textContent = maxCombo.toLocaleString();
+    
+    // Judgments
+    resultsExcellent.textContent = judgmentCounts.excellent.toLocaleString();
+    resultsGood.textContent = judgmentCounts.Good.toLocaleString();
+    resultsFast.textContent = judgmentCounts.Fast.toLocaleString();
+    resultsLate.textContent = judgmentCounts.Late.toLocaleString();
+    resultsMiss.textContent = judgmentCounts.MISS.toLocaleString();
+    
+    resultsOverlay.style.display = 'flex';
 }
 
 function updateHUD(t) {
@@ -985,8 +1082,8 @@ window.addEventListener('contextmenu', (e) => {
     }
 });
 
-retryBtn.addEventListener('click', () => {
-    gameoverOverlay.style.display = 'none';
+resultsCloseBtn.addEventListener('click', () => {
+    resultsOverlay.style.display = 'none';
     songSelection.style.display = 'flex';
 });
 
