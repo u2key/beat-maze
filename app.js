@@ -328,9 +328,13 @@ function renderSongsList() {
         div.className = `song-item ${selectedSongId === song.id ? 'selected' : ''}`;
         
         const textDiv = document.createElement('div');
+        const durationMin = Math.floor(song.duration / 60);
+        const durationSec = Math.floor(song.duration % 60).toString().padStart(2, '0');
+        const durationStr = song.duration ? `${durationMin}:${durationSec}` : 'N/A';
+        
         textDiv.innerHTML = `
             <div class="song-title">${song.title}</div>
-            <div class="song-meta">${song.bpm} BPM | ${song.leadIn.toFixed(1)}s Lead-in</div>
+            <div class="song-meta">${song.bpm} BPM | Duration: ${durationStr}</div>
         `;
         div.appendChild(textDiv);
         

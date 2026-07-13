@@ -106,11 +106,15 @@ function getSongsList() {
                 const mp3Exists = fs.existsSync(path.join(songsDir, `${id}.mp3`));
                 
                 if (mp3Exists) {
+                    const duration = data.segments && data.segments.length > 0 
+                        ? data.segments[data.segments.length - 1].time 
+                        : 0;
                     list.push({
                         id: id,
                         title: data.title || id,
                         bpm: data.bpm || 120,
                         leadIn: data.leadIn || 2.5,
+                        duration: duration,
                         mp3: `songs/${id}.mp3`,
                         json: `songs/${id}.json`
                     });
