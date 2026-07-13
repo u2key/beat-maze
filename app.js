@@ -68,6 +68,29 @@ let zoomStartTime = 0;
 let drawReqId;
 let localPredictionActive = false;
 
+// Judgment Popups System
+let judgmentPopups = [];
+function showJudgmentPopup(text, color, x, y) {
+    judgmentPopups.push({
+        text,
+        color,
+        x,
+        y,
+        createdAt: Date.now(),
+        duration: 800 // 800ms
+    });
+}
+function getJudgmentColor(judgment) {
+    switch (judgment) {
+        case 'excellent': return '#00e5ff'; // Cyan
+        case 'Good':      return '#ffb300'; // Amber/Gold
+        case 'Fast':      return '#ff3d00'; // Red-Orange
+        case 'Late':      return '#2979ff'; // Blue
+        case 'MISS':      return '#ff1744'; // Red
+        default:          return '#ffffff';
+    }
+}
+
 // Canvas resizing
 function resizeCanvas() {
     canvas.width = window.innerWidth;
@@ -225,11 +248,13 @@ function initWebSocket() {
                         if (data.judgment === 'MISS') {
                             // Server rejected tap - clear prediction so next playerUpdate corrects state
                             localPredictionActive = false;
+                            showJudgmentPopup('MISS', getJudgmentColor('MISS'), data.x, data.y);
                         } else {
                             playLocalTurnFeedback(data.judgment);
+                            showJudgmentPopup(data.judgment, getJudgmentColor(data.judgment), data.x, data.y);
                         }
                     } else {
-                        if (data.judgment !== 'MISS') playEcho();
+                        if (data.judgment !== 'MISS' && data.judgment !== 'Fast' && data.judgment !== 'Late') playEcho();
                     }
                     break;
             }
@@ -521,15 +546,15 @@ function playLocalTurnFeedback(judgment) {
     osc.connect(env); env.connect(audioContext.destination);
     osc.type = 'triangle';
     
-    if (judgment === 'PERFECT') {
+    if (judgment === 'excellent') {
         osc.frequency.value = 1000;
         env.gain.value = 0.4;
-    } else if (judgment === 'GREAT') {
+    } else if (judgment === 'Good') {
         osc.frequency.value = 880;
         env.gain.value = 0.3;
     } else {
-        osc.frequency.value = 750;
-        env.gain.value = 0.2;
+        osc.frequency.value = 720;
+        env.gain.value = 0.15;
     }
     
     env.gain.setValueAtTime(env.gain.value, now);
@@ -1072,7 +1097,53 @@ function render(t, camX, camY) {
             ctx.fill();
             ctx.globalAlpha = 1.0;
         }
-    }
+    // Render judgment popups (in world space)
+    const nowTimeMs = Date.now();
+    judgmentPopups = judgmentPopups.filter(pop => nowTimeMs - pop.createdAt < pop.duration);
+    
+    judgmentPopups.forEach(pop => {
+        const elapsed = nowTimeMs - pop.createdAt;
+        const progress = elapsed / pop.duration;
+        
+        // Float up (y gets smaller because up is negative y in canvas)
+        const currentY = pop.y - progress * 50; 
+        
+        ctx.save();
+        ctx.translate(pop.x, currentY);
+        
+        // Bounce scale effect at beginning
+        let scale = 1.0;
+        if (progress < 0.15) {
+            scale = 1.0 + (0.15 - progress) * 2.5; 
+        } else if (progress > 0.6) {
+            // Shrink/fade towards the end
+            scale = 1.0 - (progress - 0.6) * 2.5;
+        }
+        scale = Math.max(0, scale);
+        ctx.scale(scale / camScale, scale / camScale); // Counteract camera scale so text size remains constant on screen
+        
+        const alpha = Math.max(0, 1 - progress);
+        ctx.globalAlpha = alpha;
+        
+        ctx.font = "bold 22px 'Outfit', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        
+        // Text shadow/glow
+        ctx.shadowColor = pop.color;
+        ctx.shadowBlur = 10;
+        
+        // Draw outline
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 4;
+        ctx.strokeText(pop.text, 0, 0);
+        
+        // Fill text
+        ctx.fillStyle = pop.color;
+        ctx.fillText(pop.text, 0, 0);
+        
+        ctx.restore();
+    });
     
     ctx.restore();
 }

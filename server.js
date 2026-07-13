@@ -576,16 +576,14 @@ wss.on('connection', (ws) => {
                     
                     const diffMs = Math.abs(diff) * 1000;
                     let scoreAdd = 100;
-                    let judgment = "GOOD";
-                    if (diffMs < 50) {
+                    let judgment = "Good";
+                    if (diffMs < 80) {
                         scoreAdd = 300;
-                        judgment = "PERFECT";
-                        sharedCombo++;
-                    } else if (diffMs < 120) {
-                        scoreAdd = 200;
-                        judgment = "GREAT";
+                        judgment = "excellent";
                         sharedCombo++;
                     } else {
+                        scoreAdd = 150;
+                        judgment = "Good";
                         sharedCombo++;
                     }
                     p.score += scoreAdd;
@@ -611,6 +609,9 @@ wss.on('connection', (ws) => {
                         p.anchor = { x: p.x, y: p.y, time: nextTurn.time };
                         p.trail.push({ x: p.x, y: p.y });
                         sharedCombo = 0;
+                        
+                        // Snap turn but combo breaks: judge Fast if clicked early, Late if clicked late
+                        const judgment = (diff < 0) ? "Fast" : "Late";
                         broadcast({ 
                             type: 'hit', 
                             id, 
@@ -619,7 +620,7 @@ wss.on('connection', (ws) => {
                             score: p.score, 
                             x: p.x, 
                             y: p.y, 
-                            judgment: "MISS" 
+                            judgment 
                         });
                     } else {
                         p.currentDir = newDir;
