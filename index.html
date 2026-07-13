@@ -141,6 +141,7 @@
         /* --- Canvas --- */
         #game-canvas {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            touch-action: none;
         }
 
         /* --- Action Button --- */
@@ -295,6 +296,23 @@
         }
         .player-dot {
             width: 10px; height: 10px; border-radius: 50%;
+        }
+
+        /* --- Mobile Responsiveness --- */
+        @media (max-width: 768px) {
+            #join-overlay h1 { font-size: 3rem; }
+            #song-selection h2 { font-size: 2rem; margin-bottom: 15px; }
+            #lobby-layout { flex-direction: column; height: auto; max-height: 80vh; overflow-y: auto; gap: 15px; }
+            .lobby-panel { max-height: none; }
+            .results-card { width: 92vw; padding: 25px 15px; }
+            #results-title { font-size: 2rem; }
+            .results-stats-row { flex-direction: column; gap: 8px; margin: 15px 0; }
+            .results-stat-box { flex-direction: row; justify-content: space-between; padding: 10px 15px; }
+            .results-details-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
+            #hud-top { padding: 10px 15px; }
+            .hud-item { font-size: 1.2rem; }
+            #players-list { top: 50px; right: 10px; }
+            .player-tag { font-size: 0.75rem; padding: 4px 8px; }
         }
     </style>
 </head>
