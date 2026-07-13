@@ -514,12 +514,13 @@ function renderLeaderboard() {
         else if (idx === 2) rankClass = 'rank-3';
         
         div.className = `leaderboard-item ${rankClass}`;
+        const maxComboDisplay = entry.max_combo !== undefined ? entry.max_combo : 0;
         div.innerHTML = `
             <div class="rank-num">${idx + 1}</div>
             <div class="rank-name">${entry.name}</div>
             <div style="text-align: right;">
                 <div class="rank-pct">${entry.percent}%</div>
-                <div class="rank-score">Score: ${entry.score}</div>
+                <div class="rank-score">Score: ${entry.score} | Max Combo: <span style="color: #00e5ff;">${maxComboDisplay}</span></div>
             </div>
         `;
         leaderboardList.appendChild(div);

@@ -42,6 +42,10 @@ db.serialize(() => {
             return;
         }
         
+        db.run(`ALTER TABLE leaderboard ADD COLUMN max_combo INTEGER DEFAULT 0`, (err) => {
+            // Ignore error if column already exists
+        });
+        
         // Auto-migration from leaderboard.json
         const jsonPath = path.join(__dirname, 'leaderboard.json');
         if (fs.existsSync(jsonPath)) {
@@ -130,11 +134,9 @@ db.serialize(() => {
 
 function broadcastLeaderboard(songId, difficulty, wsOnly = null) {
     db.all(
-        `SELECT player_name AS name, percent, score, date 
-         FROM leaderboard 
-         WHERE song_id = ? AND difficulty = ? 
-         ORDER BY percent DESC, score DESC, CAST(date AS INTEGER) ASC 
-         LIMIT 10`,
+        `SELECT player_name as name, percent, score, max_combo, date FROM leaderboard 
+         WHERE song_id = ? AND difficulty = ?
+         ORDER BY percent DESC, score DESC, CAST(date AS INTEGER) ASC LIMIT 10`,
         [songId, difficulty],
         (err, rows) => {
             if (err) {
@@ -156,11 +158,11 @@ function broadcastLeaderboard(songId, difficulty, wsOnly = null) {
     );
 }
 
-function recordScore(songId, difficulty, playerName, pct, score) {
+function recordScore(songId, difficulty, playerName, pct, score, maxCombo) {
     if (!songId || !playerName) return;
     
     db.get(
-        `SELECT percent, score FROM leaderboard 
+        `SELECT percent, score, max_combo FROM leaderboard 
          WHERE song_id = ? AND difficulty = ? AND player_name = ?`,
         [songId, difficulty, playerName],
         (err, row) => {
@@ -171,17 +173,17 @@ function recordScore(songId, difficulty, playerName, pct, score) {
                 if (pct > row.percent || (pct === row.percent && score > row.score)) {
                     db.run(
                         `UPDATE leaderboard 
-                         SET percent = ?, score = ?, date = ? 
+                         SET percent = ?, score = ?, max_combo = ?, date = ? 
                          WHERE song_id = ? AND difficulty = ? AND player_name = ?`,
-                        [pct, score, dateStr, songId, difficulty, playerName],
+                        [pct, score, maxCombo, dateStr, songId, difficulty, playerName],
                         (updateErr) => { if (!updateErr) finishRecordScore(); }
                     );
                 }
             } else {
                 db.run(
-                    `INSERT INTO leaderboard (song_id, difficulty, player_name, percent, score, date) 
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [songId, difficulty, playerName, pct, score, dateStr],
+                    `INSERT INTO leaderboard (song_id, difficulty, player_name, percent, score, max_combo, date) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    [songId, difficulty, playerName, pct, score, maxCombo, dateStr],
                     (insertErr) => { if (!insertErr) finishRecordScore(); }
                 );
             }
@@ -475,6 +477,7 @@ wss.on('connection', (ws) => {
         name: '', // Set on registerName
         score: 0,
         combo: 0,
+        maxCombo: 0,
         alive: !isSpectator,
         spectator: isSpectator,
         x: 0,
@@ -731,6 +734,7 @@ wss.on('connection', (ws) => {
                     }
                     p.score += scoreAdd + (sharedCombo * 10);
                     p.combo = sharedCombo;
+                    p.maxCombo = Math.max(p.maxCombo || 0, p.combo);
                     
                     broadcast({ 
                         type: 'hit', 
@@ -844,7 +848,7 @@ function updatePhysics() {
                     broadcast({ type: 'playerDead', id });
                     
                     const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score);
+                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
                 }
                 
                 // Wall crash (only if not finished yet)
@@ -854,7 +858,7 @@ function updatePhysics() {
                     broadcast({ type: 'playerDead', id });
                     
                     const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score);
+                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
                 }
                 
                 // Finished level
@@ -863,7 +867,7 @@ function updatePhysics() {
                     if (t >= lastTurn.time) {
                         if (!p.finished) {
                             p.finished = true;
-                            recordScore(selectedSong.id, selectedDifficulty, p.name, 100, p.score);
+                            recordScore(selectedSong.id, selectedDifficulty, p.name, 100, p.score, p.maxCombo);
                         }
                     } else {
                         allFinished = false;
