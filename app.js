@@ -41,6 +41,8 @@ let audioContext;
 let audioUnlocked = false;
 let loadedAudioBuffer = null;
 let audioSource = null;
+let musicGainNode = null;
+let musicVolumeBoost = 1.0;
 
 // --- Multiplayer & State ---
 let ws;
@@ -91,6 +93,74 @@ function getJudgmentColor(judgment) {
         default:          return '#ffffff';
     }
 }
+
+// Pitch Detection and Harmonization System
+let precalculatedPitches = [];
+const NOTE_FREQS = [];
+for (let i = -48; i <= 48; i++) {
+    NOTE_FREQS.push(440 * Math.pow(2, i / 12));
+}
+
+function snapToNote(freq) {
+    let closest = NOTE_FREQS[0];
+    let minDist = Math.abs(freq - closest);
+    for (let i = 1; i < NOTE_FREQS.length; i++) {
+        const dist = Math.abs(freq - NOTE_FREQS[i]);
+        if (dist < minDist) {
+            minDist = dist;
+            closest = NOTE_FREQS[i];
+        }
+    }
+    return closest;
+}
+
+function detectPitch(buffer, time) {
+    const sampleRate = buffer.sampleRate;
+    const channelData = buffer.getChannelData(0);
+    const startSample = Math.floor(time * sampleRate);
+    const fftSize = 2048;
+    
+    if (startSample < 0 || startSample + fftSize > channelData.length) {
+        return 440;
+    }
+    
+    const signal = channelData.subarray(startSample, startSample + fftSize);
+    let r = new Float32Array(fftSize);
+    for (let lag = 0; lag < fftSize / 2; lag++) {
+        let sum = 0;
+        for (let i = 0; i < fftSize / 2; i++) {
+            sum += signal[i] * signal[i + lag];
+        }
+        r[lag] = sum;
+    }
+    
+    let threshold = 0.9 * r[0];
+    let peakLag = -1;
+    let searchStart = 0;
+    for (let lag = 1; lag < fftSize / 2; lag++) {
+        if (r[lag] < threshold) {
+            searchStart = lag;
+            break;
+        }
+    }
+    
+    let maxVal = -1;
+    for (let lag = searchStart; lag < fftSize / 2; lag++) {
+        if (r[lag] > maxVal && r[lag] > r[lag - 1] && r[lag] > r[lag + 1]) {
+            maxVal = r[lag];
+            peakLag = lag;
+        }
+    }
+    
+    if (peakLag > -1) {
+        const frequency = sampleRate / peakLag;
+        if (frequency >= 200 && frequency <= 1200) {
+            return frequency;
+        }
+    }
+    return 440;
+}
+
 
 // Canvas resizing
 function resizeCanvas() {
@@ -256,7 +326,7 @@ function initWebSocket() {
                             localPredictionActive = false;
                             showJudgmentPopup('MISS', getJudgmentColor('MISS'), data.x, data.y);
                         } else {
-                            playLocalTurnFeedback(data.judgment);
+                            playLocalTurnFeedback(data.judgment, data.turnIndex);
                             showJudgmentPopup(data.judgment, getJudgmentColor(data.judgment), data.x, data.y);
                         }
                     } else {
@@ -449,6 +519,44 @@ async function downloadSongData(songId) {
         if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
         loadedAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         
+        downloadStatus.textContent = `Analyzing audio & notes...`;
+        // 1. Calculate RMS to normalize volume
+        try {
+            const channelData = loadedAudioBuffer.getChannelData(0);
+            let sum = 0;
+            const samplePoints = 10000;
+            const step = Math.max(1, Math.floor(channelData.length / samplePoints));
+            let count = 0;
+            for (let i = 0; i < channelData.length; i += step) {
+                sum += channelData[i] * channelData[i];
+                count++;
+            }
+            const rms = Math.sqrt(sum / count);
+            const targetRMS = 0.18;
+            musicVolumeBoost = rms > 0 ? targetRMS / rms : 1.0;
+            // Max boost 3.5x, min 0.8x
+            musicVolumeBoost = Math.max(0.8, Math.min(3.5, musicVolumeBoost));
+            console.log(`Audio RMS: ${rms.toFixed(4)}, Auto volume boost: ${musicVolumeBoost.toFixed(2)}x`);
+        } catch (err) {
+            console.error("Failed to calculate RMS volume boost:", err);
+            musicVolumeBoost = 1.0;
+        }
+
+        // 2. Precalculate note pitches matching melody at turn points
+        try {
+            precalculatedPitches = [];
+            if (loadedTrackData && loadedTrackData.segments) {
+                for (let i = 0; i < loadedTrackData.segments.length; i++) {
+                    const t = loadedTrackData.segments[i].time;
+                    const rawPitch = detectPitch(loadedAudioBuffer, t);
+                    const snapped = snapToNote(rawPitch);
+                    precalculatedPitches.push(snapped);
+                }
+            }
+        } catch (err) {
+            console.error("Failed to precalculate pitches:", err);
+        }
+        
         downloadStatus.textContent = `Ready to play!`;
         updateStartButtonText();
     } catch (e) {
@@ -547,7 +655,7 @@ function unlockAudio() {
     }
 }
 
-function playLocalTurnFeedback(judgment) {
+function playLocalTurnFeedback(judgment, turnIndex) {
     if (!audioContext) return;
     const now = audioContext.currentTime;
     const osc = audioContext.createOscillator();
@@ -556,20 +664,27 @@ function playLocalTurnFeedback(judgment) {
     osc.connect(env); env.connect(audioContext.destination);
     osc.type = 'triangle';
     
+    // Harmonization: match the melody note at this turn index
+    const baseFreq = (typeof turnIndex === 'number' && precalculatedPitches[turnIndex]) 
+        ? precalculatedPitches[turnIndex] 
+        : 440; // Default A4 fallback
+    
+    let freq = baseFreq;
     if (judgment === 'excellent') {
-        osc.frequency.value = 1000;
-        env.gain.value = 0.4;
+        freq = baseFreq * 1.5; // Perfect fifth above - bright and harmonious
+        env.gain.value = 0.45;
     } else if (judgment === 'Good') {
-        osc.frequency.value = 880;
-        env.gain.value = 0.3;
+        freq = baseFreq; // Unison - matches melody root note
+        env.gain.value = 0.35;
     } else {
-        osc.frequency.value = 720;
-        env.gain.value = 0.15;
+        freq = baseFreq * 0.75; // Perfect fourth below - lower, signals error musically
+        env.gain.value = 0.2;
     }
     
+    osc.frequency.setValueAtTime(freq, now);
     env.gain.setValueAtTime(env.gain.value, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-    osc.start(now); osc.stop(now + 0.12);
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.start(now); osc.stop(now + 0.14);
 }
 
 // Handle tab visibility changes to prevent stale UI state when waking up
@@ -691,7 +806,11 @@ function handleStartGame(startDelayMs, serverSegments) {
     }
     audioSource = audioContext.createBufferSource();
     audioSource.buffer = loadedAudioBuffer;
-    audioSource.connect(audioContext.destination);
+    
+    musicGainNode = audioContext.createGain();
+    musicGainNode.gain.setValueAtTime(musicVolumeBoost, audioContext.currentTime);
+    audioSource.connect(musicGainNode);
+    musicGainNode.connect(audioContext.destination);
     
     const nowTime = audioContext.currentTime;
     if (nowTime < gameStartTime) {
@@ -735,7 +854,11 @@ function handleStartSpectating(elapsedT, serverSegments) {
     }
     audioSource = audioContext.createBufferSource();
     audioSource.buffer = loadedAudioBuffer;
-    audioSource.connect(audioContext.destination);
+    
+    musicGainNode = audioContext.createGain();
+    musicGainNode.gain.setValueAtTime(musicVolumeBoost, audioContext.currentTime);
+    audioSource.connect(musicGainNode);
+    musicGainNode.connect(audioContext.destination);
     
     const nowTime = audioContext.currentTime;
     if (elapsedT < 0) {

@@ -645,7 +645,8 @@ wss.on('connection', (ws) => {
                         score: p.score, 
                         x: p.x, 
                         y: p.y, 
-                        judgment 
+                        judgment,
+                        turnIndex: p.turnIndex
                     });
                 } else {
                     const distToTurn = Math.hypot(p.x - nextTurn.x, p.y - nextTurn.y);
@@ -668,7 +669,8 @@ wss.on('connection', (ws) => {
                             score: p.score, 
                             x: p.x, 
                             y: p.y, 
-                            judgment 
+                            judgment,
+                            turnIndex: p.turnIndex
                         });
                     } else {
                         p.currentDir = newDir;
