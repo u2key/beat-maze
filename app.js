@@ -24,7 +24,7 @@ const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
     { x: 0, y: -1 }   // dir 1: up (-y)
 ];
-const SPEED_PER_SEC = 160;
+let SPEED_PER_SEC = 160;
 const WALL_HALF_WIDTH = 25;
 
 const SPAWN_OFFSETS = [
@@ -54,6 +54,7 @@ let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
 let currentLeaderboard = [];
 let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
+let diff5Unlocked = false;
 let latency = 0;
 let calibrationOffset = -0.08; // default -80ms
 
@@ -166,6 +167,11 @@ function initWebSocket() {
                         currentLeaderboard = data.leaderboard || [];
                         renderLeaderboard();
                     }
+                    break;
+                    
+                case 'unlocksUpdate':
+                    diff5Unlocked = data.diff5Unlocked;
+                    updateDifficultyUI();
                     break;
                     
                 case 'gameStateChange':
@@ -1158,6 +1164,10 @@ diffBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         if (gameState === 'idle') {
             const diff = parseInt(btn.getAttribute('data-diff'));
+            if (diff === 5 && !diff5Unlocked) {
+                alert("Clear this song on ★★★ with 100% to unlock the brutal ★★★★★ mode!");
+                return;
+            }
             if (ws && ws.readyState === 1) {
                 ws.send(JSON.stringify({ type: 'selectDifficulty', difficulty: diff }));
             }
@@ -1166,13 +1176,42 @@ diffBtns.forEach(btn => {
 });
 
 function updateDifficultyUI() {
+    SPEED_PER_SEC = (selectedDifficulty === 5) ? 240 : 160;
+    
+    const diff5Btn = document.getElementById('diff5-btn');
+    if (diff5Btn) {
+        if (diff5Unlocked) {
+            diff5Btn.textContent = '★★★★★';
+            diff5Btn.style.cursor = 'pointer';
+            diff5Btn.title = 'Unlock the brutal 5-star level!';
+        } else {
+            diff5Btn.textContent = '★★★★★ 🔒';
+            diff5Btn.style.cursor = 'not-allowed';
+            diff5Btn.title = 'Clear ★★★ level 100% to unlock!';
+            if (selectedDifficulty === 5) {
+                selectedDifficulty = 3;
+                SPEED_PER_SEC = 160;
+            }
+        }
+    }
+
     diffBtns.forEach(btn => {
         const diff = parseInt(btn.getAttribute('data-diff'));
+        
+        // If 5 is locked and this is the 5 button, style it as locked
+        if (diff === 5 && !diff5Unlocked) {
+            btn.classList.remove('active');
+            btn.style.borderColor = 'rgba(255,255,255,0.1)';
+            btn.style.background = 'rgba(255,255,255,0.05)';
+            btn.style.color = 'rgba(255,255,255,0.3)';
+            return;
+        }
+
         if (diff === selectedDifficulty) {
             btn.classList.add('active');
-            btn.style.borderColor = '#00e676';
-            btn.style.background = 'rgba(0, 230, 118, 0.1)';
-            btn.style.color = '#00e676';
+            btn.style.borderColor = (diff === 5) ? '#ff1744' : '#00e676';
+            btn.style.background = (diff === 5) ? 'rgba(255, 23, 68, 0.1)' : 'rgba(0, 230, 118, 0.1)';
+            btn.style.color = (diff === 5) ? '#ff1744' : '#00e676';
         } else {
             btn.classList.remove('active');
             btn.style.borderColor = 'rgba(255,255,255,0.2)';

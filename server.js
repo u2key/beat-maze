@@ -87,6 +87,32 @@ function recordScore(songId, difficulty, playerName, pct, score) {
     
     saveLeaderboard();
     broadcast({ type: 'leaderboardUpdate', songId, difficulty, leaderboard: leaderboard[key] });
+    
+    // Check if this unlocked diff 5 for any players currently in the lobby
+    if (difficulty === 3 && pct === 100) {
+        wss.clients.forEach(client => {
+            if (client.readyState === 1 && client.playerId) {
+                sendUnlocksUpdate(client, client.playerId);
+            }
+        });
+    }
+}
+
+function isDiff5Unlocked(songId, playerName) {
+    if (!songId || !playerName) return false;
+    const key = `${songId}_diff3`;
+    const entries = leaderboard[key] || [];
+    return entries.some(entry => entry.name === playerName && entry.percent === 100);
+}
+
+function sendUnlocksUpdate(ws, playerId) {
+    const p = players[playerId];
+    if (!p || !selectedSong) return;
+    const unlocked = isDiff5Unlocked(selectedSong.id, p.name);
+    ws.send(JSON.stringify({
+        type: 'unlocksUpdate',
+        diff5Unlocked: unlocked
+    }));
 }
 
 // Get the list of all available songs in the songs/ directory
@@ -260,7 +286,7 @@ const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
     { x: 0, y: -1 }   // dir 1: up (-y)
 ];
-const SPEED_PER_SEC = 160;
+let SPEED_PER_SEC = 160;
 const WALL_HALF_WIDTH = 25;
 
 const SPAWN_OFFSETS = [
@@ -379,6 +405,9 @@ wss.on('connection', (ws) => {
                     // Broadcast player joined only after name is registered
                     broadcast({ type: 'playerJoined', player: p });
                     
+                    // Send unlocks state to this client
+                    sendUnlocksUpdate(ws, id);
+                    
                     // Send current leaderboard to this specific client if song is selected
                     if (selectedSong) {
                         const key = `${selectedSong.id}_diff${selectedDifficulty}`;
@@ -412,6 +441,13 @@ wss.on('connection', (ws) => {
                             difficulty: selectedDifficulty,
                             leaderboard: leaderboard[key] || []
                         });
+
+                        // Update unlocks for all connected clients since the song changed
+                        wss.clients.forEach(client => {
+                            if (client.readyState === 1 && client.playerId) {
+                                sendUnlocksUpdate(client, client.playerId);
+                            }
+                        });
                     } catch (err) {
                         console.error("Failed to load song segments", err);
                     }
@@ -421,7 +457,15 @@ wss.on('connection', (ws) => {
             
             case 'selectDifficulty': {
                 if (gameState === 'idle') {
-                    selectedDifficulty = parseInt(data.difficulty) || 3;
+                    const diff = parseInt(data.difficulty) || 3;
+                    if (diff === 5) {
+                        const p = players[id];
+                        if (!p || !selectedSong || !isDiff5Unlocked(selectedSong.id, p.name)) {
+                            return;
+                        }
+                    }
+                    selectedDifficulty = diff;
+                    SPEED_PER_SEC = selectedDifficulty === 5 ? 240 : 160;
                     broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
                     
                     if (selectedSong) {
@@ -797,7 +841,7 @@ function broadcast(msg) {
 }
 
 function filterSegmentsByDifficulty(originalSegments, bpm, difficulty) {
-    if (difficulty === 3 || originalSegments.length <= 2) return originalSegments;
+    if (difficulty === 3 || difficulty === 5 || originalSegments.length <= 2) return originalSegments;
     
     const beatDuration = 60.0 / bpm;
     // minGap: 1 (Easy) -> 2 beats, 2 (Medium) -> 1 beat
