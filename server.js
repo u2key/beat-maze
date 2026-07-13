@@ -440,7 +440,25 @@ wss.on('connection', (ws) => {
             }
             
             case 'startRequest': {
-                if (gameState !== 'idle' || !selectedSong) return;
+                if (gameState !== 'idle') {
+                    // Redirect to spectate if game is already running
+                    const p = players[id];
+                    if (p && selectedSong) {
+                        p.spectator = true;
+                        p.alive = false;
+                        p.finished = false;
+                        const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                        trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
+                        const currentT = (Date.now() - gameStartTime) / 1000;
+                        ws.send(JSON.stringify({
+                            type: 'startSpectating',
+                            segments: filteredSegments,
+                            elapsedT: currentT
+                        }));
+                    }
+                    return;
+                }
+                if (!selectedSong) return;
                 
                 if (gameEndTimeout) {
                     clearTimeout(gameEndTimeout);

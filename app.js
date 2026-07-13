@@ -703,10 +703,15 @@ function handleStartSpectating(elapsedT, serverSegments) {
     audioSource.connect(audioContext.destination);
     
     const nowTime = audioContext.currentTime;
-    gameStartTime = nowTime - elapsedT;
-    
-    if (elapsedT < loadedAudioBuffer.duration) {
-        audioSource.start(nowTime, elapsedT);
+    if (elapsedT < 0) {
+        // Scheduled in the future (countdown period)
+        gameStartTime = nowTime - elapsedT;
+        audioSource.start(gameStartTime, 0);
+    } else {
+        gameStartTime = nowTime - elapsedT;
+        if (elapsedT < loadedAudioBuffer.duration) {
+            audioSource.start(nowTime, elapsedT);
+        }
     }
     
     gameState = 'playing';
@@ -820,8 +825,7 @@ retryBtn.addEventListener('click', () => {
 
 startGameBtn.addEventListener('click', () => {
     if (ws && ws.readyState === 1) {
-        const isSpectator = players[localId] && players[localId].spectator;
-        if (gameState !== 'idle' || isSpectator) {
+        if (gameState !== 'idle') {
             ws.send(JSON.stringify({ type: 'spectateRequest' }));
         } else {
             ws.send(JSON.stringify({ type: 'startRequest' }));
