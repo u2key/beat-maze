@@ -846,10 +846,17 @@ window.addEventListener('pointerdown', (e) => {
     handleTap();
 });
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && !e.repeat) {
+    if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) {
         if (songSelection.style.display !== 'none') return;
         e.preventDefault();
         handleTap();
+    }
+});
+
+// Disable context menu during gameplay or calibration to allow right-click tapping
+window.addEventListener('contextmenu', (e) => {
+    if (songSelection.style.display === 'none' || calibActive) {
+        e.preventDefault();
     }
 });
 
@@ -1282,7 +1289,7 @@ const handleCalibTap = (e) => {
 };
 
 const handleCalibKey = (e) => {
-    if (e.code === 'Space') {
+    if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault();
         handleCalibTap(e);
     }
