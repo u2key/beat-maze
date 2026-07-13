@@ -166,6 +166,11 @@ function initWebSocket() {
                     handleStartGame(adjustedDelay, data.segments);
                     break;
                 }
+                
+                case 'startSpectating': {
+                    handleStartSpectating(data.elapsedT, data.segments);
+                    break;
+                }
                     
                 case 'playerUpdate': {
                     if (gameState === 'idle') break;
@@ -662,6 +667,45 @@ function handleStartGame(startDelayMs, serverSegments) {
     drawReqId = requestAnimationFrame(gameLoop);
 }
 
+function handleStartSpectating(elapsedT, serverSegments) {
+    unlockAudio();
+    localPredictionActive = false;
+    gameoverOverlay.style.display = 'none';
+    songSelection.style.display = 'none';
+    
+    const localP = players[localId];
+    if (localP) {
+        localP.spectator = true;
+        localP.alive = false;
+        localP.finished = false;
+    }
+    
+    precalculatedTracks = {};
+    for (const id in players) {
+        const p = players[id];
+        precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
+    }
+    
+    if (audioSource) {
+        try { audioSource.stop(); } catch(e) {}
+    }
+    audioSource = audioContext.createBufferSource();
+    audioSource.buffer = loadedAudioBuffer;
+    audioSource.connect(audioContext.destination);
+    
+    const nowTime = audioContext.currentTime;
+    gameStartTime = nowTime - elapsedT;
+    
+    if (elapsedT < loadedAudioBuffer.duration) {
+        audioSource.start(nowTime, elapsedT);
+    }
+    
+    gameState = 'playing';
+    
+    if (drawReqId) cancelAnimationFrame(drawReqId);
+    drawReqId = requestAnimationFrame(gameLoop);
+}
+
 function stopGame() {
     gameState = 'idle';
     localPredictionActive = false;
@@ -711,15 +755,30 @@ function handleTap() {
         if (nextIdx < pts.length) {
             const nextTurn = pts[nextIdx];
             const diff = calibratedTime - nextTurn.time;
-            if (Math.abs(diff) <= 0.22) {
-                // Predict successful turn - update local state immediately
-                localP.turnIndex = nextIdx;
-                localP.currentDir = nextTurn.dir;
-                localP.x = nextTurn.x;
-                localP.y = nextTurn.y;
-                localP.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
-                localP.trail.push({ x: nextTurn.x, y: nextTurn.y });
-                localPredictionActive = true;
+            const newDir = 1 - localP.currentDir;
+            if (newDir === nextTurn.dir) {
+                if (Math.abs(diff) <= 0.22) {
+                    // Predict successful turn - update local state immediately
+                    localP.turnIndex = nextIdx;
+                    localP.currentDir = nextTurn.dir;
+                    localP.x = nextTurn.x;
+                    localP.y = nextTurn.y;
+                    localP.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
+                    localP.trail.push({ x: nextTurn.x, y: nextTurn.y });
+                    localPredictionActive = true;
+                } else {
+                    // Timing missed, but is it inside the corridor?
+                    if (isInsideCorridor(localP.x, localP.y, pts)) {
+                        // Snap to the correct turn point and keep going!
+                        localP.turnIndex = nextIdx;
+                        localP.currentDir = nextTurn.dir;
+                        localP.x = nextTurn.x;
+                        localP.y = nextTurn.y;
+                        localP.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
+                        localP.trail.push({ x: nextTurn.x, y: nextTurn.y });
+                        localPredictionActive = true;
+                    }
+                }
             }
         }
     }
@@ -751,7 +810,11 @@ retryBtn.addEventListener('click', () => {
 
 startGameBtn.addEventListener('click', () => {
     if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'startRequest' }));
+        if (gameState !== 'idle') {
+            ws.send(JSON.stringify({ type: 'spectateRequest' }));
+        } else {
+            ws.send(JSON.stringify({ type: 'startRequest' }));
+        }
     }
 });
 
@@ -769,6 +832,25 @@ function getSmoothPlayerPosition(p, t) {
         x: p.anchor.x + dv.x * dist,
         y: p.anchor.y + dv.y * dist
     };
+}
+
+function pointToSegmentDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function isInsideCorridor(px, py, turnPoints) {
+    for (let i = 0; i < turnPoints.length - 1; i++) {
+        const p0 = turnPoints[i];
+        const p1 = turnPoints[i + 1];
+        const dist = pointToSegmentDist(px, py, p0.x, p0.y, p1.x, p1.y);
+        if (dist < WALL_HALF_WIDTH - 2) return true;
+    }
+    return false;
 }
 
 function precalculatePathPoints(segments, spawnIndex) {

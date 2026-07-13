@@ -281,6 +281,7 @@ let trackTurnPoints = {}; // playerId -> array of points
 let sharedCombo = 0;
 let gameState = 'idle'; // idle | starting | playing
 let selectedDifficulty = 3; // 1: Easy (★), 2: Medium (★★), 3: Hard (★★★)
+let gameEndTimeout = null;
 
 // Helper math for collision
 function pointToSegmentDist(px, py, x1, y1, x2, y2) {
@@ -441,6 +442,11 @@ wss.on('connection', (ws) => {
             case 'startRequest': {
                 if (gameState !== 'idle' || !selectedSong) return;
                 
+                if (gameEndTimeout) {
+                    clearTimeout(gameEndTimeout);
+                    gameEndTimeout = null;
+                }
+                
                 const startDelay = 4000;
                 gameStartTime = Date.now() + startDelay;
                 gameState = 'starting';
@@ -481,6 +487,28 @@ wss.on('connection', (ws) => {
                 }, startDelay);
                 
                 gameInterval = setInterval(updatePhysics, 40);
+                break;
+            }
+            
+            case 'spectateRequest': {
+                if (gameState === 'idle' || !selectedSong) return;
+                
+                const p = players[id];
+                if (p) {
+                    p.spectator = true;
+                    p.alive = false;
+                    p.finished = false;
+                    
+                    const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                    trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
+                    
+                    const currentT = (Date.now() - gameStartTime) / 1000;
+                    ws.send(JSON.stringify({
+                        type: 'startSpectating',
+                        segments: filteredSegments,
+                        elapsedT: currentT
+                    }));
+                }
                 break;
             }
             
@@ -542,11 +570,31 @@ wss.on('connection', (ws) => {
                         judgment 
                     });
                 } else {
-                    p.currentDir = newDir;
-                    p.anchor = { x: p.x, y: p.y, time: t };
-                    p.trail.push({ x: p.x, y: p.y });
-                    sharedCombo = 0;
-                    broadcast({ type: 'hit', id, combo: 0, score: p.score, x: p.x, y: p.y, judgment: "MISS" });
+                    if (newDir === nextTurn.dir && isInsideCorridor(p.x, p.y, turnPoints)) {
+                        p.turnIndex++;
+                        p.currentDir = newDir;
+                        p.x = nextTurn.x;
+                        p.y = nextTurn.y;
+                        p.anchor = { x: p.x, y: p.y, time: nextTurn.time };
+                        p.trail.push({ x: p.x, y: p.y });
+                        sharedCombo = 0;
+                        broadcast({ 
+                            type: 'hit', 
+                            id, 
+                            diffMs: Math.abs(diff) * 1000, 
+                            combo: 0, 
+                            score: p.score, 
+                            x: p.x, 
+                            y: p.y, 
+                            judgment: "MISS" 
+                        });
+                    } else {
+                        p.currentDir = newDir;
+                        p.anchor = { x: p.x, y: p.y, time: t };
+                        p.trail.push({ x: p.x, y: p.y });
+                        sharedCombo = 0;
+                        broadcast({ type: 'hit', id, combo: 0, score: p.score, x: p.x, y: p.y, judgment: "MISS" });
+                    }
                 }
                 break;
             }
@@ -602,8 +650,9 @@ function updatePhysics() {
                 p.x = p.anchor.x + dv.x * dist;
                 p.y = p.anchor.y + dv.y * dist;
                 
+                // Optimizing trail: only store turn coordinates, not intermediate physics points to prevent lag
                 const lastTrail = p.trail[p.trail.length - 1];
-                if (!lastTrail || Math.hypot(p.x - lastTrail.x, p.y - lastTrail.y) > 4) {
+                if (!lastTrail) {
                     p.trail.push({ x: p.x, y: p.y });
                 }
                 
@@ -619,8 +668,8 @@ function updatePhysics() {
                     recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score);
                 }
                 
-                // Wall crash
-                if (p.alive && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints)) {
+                // Wall crash (only if not finished yet)
+                if (p.alive && !p.finished && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints)) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
@@ -672,23 +721,33 @@ function updatePhysics() {
     });
     
     if ((allFinished || !anyAlive) && t > 1.0) {
-        clearInterval(gameInterval);
-        gameInterval = null;
-        gameState = 'idle';
-        
-        // Reset player properties for the lobby
-        for (const pid in players) {
-            const p = players[pid];
-            p.alive = true;
-            p.spectator = false;
-            p.score = 0;
-            p.combo = 0;
-            p.x = 0;
-            p.y = 0;
-            p.trail = [];
+        if (!gameEndTimeout) {
+            gameEndTimeout = setTimeout(() => {
+                clearInterval(gameInterval);
+                gameInterval = null;
+                gameState = 'idle';
+                
+                // Reset player properties for the lobby
+                for (const pid in players) {
+                    const p = players[pid];
+                    p.alive = true;
+                    p.spectator = false;
+                    p.score = 0;
+                    p.combo = 0;
+                    p.x = 0;
+                    p.y = 0;
+                    p.trail = [];
+                }
+                
+                broadcast({ type: 'gameStateChange', gameState: 'idle', players });
+                gameEndTimeout = null;
+            }, 3000);
         }
-        
-        broadcast({ type: 'gameStateChange', gameState: 'idle', players });
+    } else {
+        if (gameEndTimeout) {
+            clearTimeout(gameEndTimeout);
+            gameEndTimeout = null;
+        }
     }
 }
 
