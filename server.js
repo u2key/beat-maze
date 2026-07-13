@@ -163,7 +163,7 @@ const storage = multer.diskStorage({
         cb(null, path.join(__dirname, 'songs'));
     },
     filename: function (req, file, cb) {
-        const cleanedName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        const cleanedName = file.originalname.replace(/[^\p{L}\p{N}.\-_]/gu, '_');
         cb(null, cleanedName);
     }
 });
@@ -196,7 +196,7 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
     const total = parseInt(totalChunks);
     
     // Clean filename
-    const cleanedName = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const cleanedName = filename.replace(/[^\p{L}\p{N}.\-_]/gu, '_');
     const id = cleanedName.replace(/\.[^/.]+$/, ""); // strip extension
     
     const tmpPath = path.join(__dirname, 'songs', `tmp_${uploadId}.mp3`);
