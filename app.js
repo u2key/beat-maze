@@ -1306,7 +1306,7 @@ diffBtns.forEach(btn => {
 });
 
 function updateDifficultyUI() {
-    SPEED_PER_SEC = (selectedDifficulty === 5) ? 240 : 160;
+    SPEED_PER_SEC = (selectedDifficulty === 5) ? 360 : 160;
     
     const diff5Btn = document.getElementById('diff5-btn');
     if (diff5Btn) {

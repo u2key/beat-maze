@@ -18,101 +18,211 @@ app.use(express.static(path.join(__dirname), {
     }
 }));
 
-// --- Leaderboard Database (JSON file persistence) ---
-let leaderboard = {};
-const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+// --- SQLite Database Setup ---
+const sqlite3 = require('sqlite3').verbose();
+const dbPath = path.join(__dirname, 'leaderboard.db');
+const db = new sqlite3.Database(dbPath);
 
-function loadLeaderboard() {
-    if (fs.existsSync(LEADERBOARD_FILE)) {
-        try {
-            leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8'));
-        } catch (e) {
-            console.error("Failed to parse leaderboard.json:", e);
-            leaderboard = {};
+// Create table and migrate if needed
+db.serialize(() => {
+    db.run(`
+        CREATE TABLE IF NOT EXISTS leaderboard (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            song_id TEXT NOT NULL,
+            difficulty INTEGER NOT NULL,
+            player_name TEXT NOT NULL,
+            percent REAL NOT NULL,
+            score INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            UNIQUE(song_id, difficulty, player_name)
+        )
+    `, (err) => {
+        if (err) {
+            console.error("Failed to create leaderboard table:", err);
+            return;
         }
-    } else {
-        leaderboard = {};
-    }
-}
-loadLeaderboard();
+        
+        // Auto-migration from leaderboard.json
+        const jsonPath = path.join(__dirname, 'leaderboard.json');
+        if (fs.existsSync(jsonPath)) {
+            console.log("Found leaderboard.json, starting migration to SQLite...");
+            try {
+                const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+                
+                // Read available songs for canonical ID matching
+                const songsDir = path.join(__dirname, 'songs');
+                let availableSongIds = [];
+                if (fs.existsSync(songsDir)) {
+                    availableSongIds = fs.readdirSync(songsDir)
+                        .filter(f => f.endsWith('.json'))
+                        .map(f => f.replace('.json', ''));
+                }
+                
+                function getCanonicalSongId(oldId) {
+                    const stripped = oldId.toLowerCase().replace(/_/g, '');
+                    for (const sId of availableSongIds) {
+                        if (sId.toLowerCase().replace(/_/g, '') === stripped) {
+                            return sId;
+                        }
+                    }
+                    return oldId;
+                }
+                
+                const mergedData = {};
+                for (const key in data) {
+                    const entries = data[key];
+                    if (!Array.isArray(entries)) continue;
+                    
+                    let oldSongId = key;
+                    let difficulty = 3;
+                    
+                    const match = key.match(/^(.*)_diff(\d+)$/);
+                    if (match) {
+                        oldSongId = match[1];
+                        difficulty = parseInt(match[2]);
+                    }
+                    
+                    const canonicalId = getCanonicalSongId(oldSongId);
+                    
+                    entries.forEach(entry => {
+                        const mergeKey = `${canonicalId}_${difficulty}_${entry.name}`;
+                        if (!mergedData[mergeKey]) {
+                            mergedData[mergeKey] = { canonicalId, difficulty, entry };
+                        } else {
+                            const existing = mergedData[mergeKey].entry;
+                            if (entry.percent > existing.percent || (entry.percent === existing.percent && entry.score > existing.score)) {
+                                mergedData[mergeKey] = { canonicalId, difficulty, entry };
+                            }
+                        }
+                    });
+                }
+                
+                db.run("BEGIN TRANSACTION");
+                const stmt = db.prepare(`
+                    INSERT OR REPLACE INTO leaderboard (song_id, difficulty, player_name, percent, score, date) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `);
+                
+                let migratedCount = 0;
+                for (const k in mergedData) {
+                    const d = mergedData[k];
+                    stmt.run(d.canonicalId, d.difficulty, d.entry.name, d.entry.percent, d.entry.score, d.entry.date);
+                    migratedCount++;
+                }
+                
+                stmt.finalize();
+                db.run("COMMIT", (commitErr) => {
+                    if (commitErr) {
+                        console.error("Migration commit failed:", commitErr);
+                    } else {
+                        console.log(`Migrated ${migratedCount} unique records to SQLite. Renaming leaderboard.json to .bak`);
+                        fs.renameSync(jsonPath, jsonPath + '.bak');
+                    }
+                });
+                
+            } catch(e) {
+                console.error("Migration failed:", e);
+                db.run("ROLLBACK");
+            }
+        }
+    });
+});
 
-function saveLeaderboard() {
-    try {
-        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
-    } catch (e) {
-        console.error("Failed to save leaderboard.json:", e);
-    }
+function broadcastLeaderboard(songId, difficulty, wsOnly = null) {
+    db.all(
+        `SELECT player_name AS name, percent, score, date 
+         FROM leaderboard 
+         WHERE song_id = ? AND difficulty = ? 
+         ORDER BY percent DESC, score DESC, CAST(date AS INTEGER) ASC 
+         LIMIT 10`,
+        [songId, difficulty],
+        (err, rows) => {
+            if (err) {
+                console.error("Failed to fetch leaderboard:", err);
+                return;
+            }
+            const payload = {
+                type: 'leaderboardUpdate',
+                songId,
+                difficulty,
+                leaderboard: rows || []
+            };
+            if (wsOnly) {
+                if (wsOnly.readyState === 1) wsOnly.send(JSON.stringify(payload));
+            } else {
+                broadcast(payload);
+            }
+        }
+    );
 }
 
 function recordScore(songId, difficulty, playerName, pct, score) {
     if (!songId || !playerName) return;
     
-    const key = `${songId}_diff${difficulty}`;
-    
-    if (!leaderboard[key]) {
-        leaderboard[key] = [];
-    }
-    
-    // Check if player already has an entry
-    const existingIndex = leaderboard[key].findIndex(entry => entry.name === playerName);
-    
-    if (existingIndex !== -1) {
-        const existing = leaderboard[key][existingIndex];
-        // Only update if current run has a higher completion percentage, or equal percentage but higher score
-        if (pct > existing.percent || (pct === existing.percent && score > existing.score)) {
-            leaderboard[key][existingIndex] = {
-                name: playerName,
-                percent: pct,
-                score: score,
-                date: new Date().toLocaleDateString()
-            };
-        }
-    } else {
-        leaderboard[key].push({
-            name: playerName,
-            percent: pct,
-            score: score,
-            date: new Date().toLocaleDateString()
-        });
-    }
-    
-    // Sort descending by percentage, then descending by score
-    leaderboard[key].sort((a, b) => {
-        if (b.percent !== a.percent) return b.percent - a.percent;
-        return b.score - a.score;
-    });
-    
-    // Keep top 10 rankings
-    leaderboard[key] = leaderboard[key].slice(0, 10);
-    
-    saveLeaderboard();
-    broadcast({ type: 'leaderboardUpdate', songId, difficulty, leaderboard: leaderboard[key] });
-    
-    // Check if this unlocked diff 5 for any players currently in the lobby
-    if (difficulty === 3 && pct === 100) {
-        wss.clients.forEach(client => {
-            if (client.readyState === 1 && client.playerId) {
-                sendUnlocksUpdate(client, client.playerId);
+    db.get(
+        `SELECT percent, score FROM leaderboard 
+         WHERE song_id = ? AND difficulty = ? AND player_name = ?`,
+        [songId, difficulty, playerName],
+        (err, row) => {
+            if (err) return;
+            
+            const dateStr = Date.now().toString();
+            if (row) {
+                if (pct > row.percent || (pct === row.percent && score > row.score)) {
+                    db.run(
+                        `UPDATE leaderboard 
+                         SET percent = ?, score = ?, date = ? 
+                         WHERE song_id = ? AND difficulty = ? AND player_name = ?`,
+                        [pct, score, dateStr, songId, difficulty, playerName],
+                        (updateErr) => { if (!updateErr) finishRecordScore(); }
+                    );
+                }
+            } else {
+                db.run(
+                    `INSERT INTO leaderboard (song_id, difficulty, player_name, percent, score, date) 
+                     VALUES (?, ?, ?, ?, ?, ?)`,
+                    [songId, difficulty, playerName, pct, score, dateStr],
+                    (insertErr) => { if (!insertErr) finishRecordScore(); }
+                );
             }
-        });
-    }
+            
+            function finishRecordScore() {
+                broadcastLeaderboard(songId, difficulty);
+                if (difficulty === 3 && pct === 100) {
+                    wss.clients.forEach(client => {
+                        if (client.readyState === 1 && client.playerId) {
+                            sendUnlocksUpdate(client, client.playerId);
+                        }
+                    });
+                }
+            }
+        }
+    );
 }
 
-function isDiff5Unlocked(songId, playerName) {
-    if (!songId || !playerName) return false;
-    const key = `${songId}_diff3`;
-    const entries = leaderboard[key] || [];
-    return entries.some(entry => entry.name === playerName && entry.percent === 100);
+function isDiff5Unlocked(songId, playerName, callback) {
+    if (!songId || !playerName) return callback(false);
+    db.get(
+        `SELECT id FROM leaderboard 
+         WHERE song_id = ? AND player_name = ? AND difficulty = 3 AND percent = 100`,
+        [songId, playerName],
+        (err, row) => {
+            callback(!!row);
+        }
+    );
 }
 
 function sendUnlocksUpdate(ws, playerId) {
     const p = players[playerId];
     if (!p || !selectedSong) return;
-    const unlocked = isDiff5Unlocked(selectedSong.id, p.name);
-    ws.send(JSON.stringify({
-        type: 'unlocksUpdate',
-        diff5Unlocked: unlocked
-    }));
+    isDiff5Unlocked(selectedSong.id, p.name, (unlocked) => {
+        if (ws.readyState === 1) {
+            ws.send(JSON.stringify({
+                type: 'unlocksUpdate',
+                diff5Unlocked: unlocked
+            }));
+        }
+    });
 }
 
 // Get the list of all available songs in the songs/ directory
@@ -267,11 +377,7 @@ app.delete('/api/songs/:id', (req, res) => {
         }
         
         // Remove from local leaderboard DB too
-        delete leaderboard[id];
-        delete leaderboard[`${id}_diff1`];
-        delete leaderboard[`${id}_diff2`];
-        delete leaderboard[`${id}_diff3`];
-        saveLeaderboard();
+        db.run("DELETE FROM leaderboard WHERE song_id = ?", [id]);
         
         broadcast({ type: 'songsUpdated' });
         res.json({ success: true, songs: getSongsList() });
@@ -410,13 +516,7 @@ wss.on('connection', (ws) => {
                     
                     // Send current leaderboard to this specific client if song is selected
                     if (selectedSong) {
-                        const key = `${selectedSong.id}_diff${selectedDifficulty}`;
-                        ws.send(JSON.stringify({
-                            type: 'leaderboardUpdate',
-                            songId: selectedSong.id,
-                            difficulty: selectedDifficulty,
-                            leaderboard: leaderboard[key] || []
-                        }));
+                        broadcastLeaderboard(selectedSong.id, selectedDifficulty, ws);
                     }
                 }
                 break;
@@ -434,13 +534,7 @@ wss.on('connection', (ws) => {
                         broadcast({ type: 'songSelected', songId: song.id, title: song.title });
                         
                         // Broadcast leaderboard for the newly selected song
-                        const key = `${song.id}_diff${selectedDifficulty}`;
-                        broadcast({
-                            type: 'leaderboardUpdate',
-                            songId: song.id,
-                            difficulty: selectedDifficulty,
-                            leaderboard: leaderboard[key] || []
-                        });
+                        broadcastLeaderboard(song.id, selectedDifficulty);
 
                         // Update unlocks for all connected clients since the song changed
                         wss.clients.forEach(client => {
@@ -458,24 +552,25 @@ wss.on('connection', (ws) => {
             case 'selectDifficulty': {
                 if (gameState === 'idle') {
                     const diff = parseInt(data.difficulty) || 3;
+                    
+                    const finishDifficultySelect = () => {
+                        selectedDifficulty = diff;
+                        SPEED_PER_SEC = selectedDifficulty === 5 ? 360 : 160;
+                        broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
+                        
+                        if (selectedSong) {
+                            broadcastLeaderboard(selectedSong.id, selectedDifficulty);
+                        }
+                    };
+
                     if (diff === 5) {
                         const p = players[id];
-                        if (!p || !selectedSong || !isDiff5Unlocked(selectedSong.id, p.name)) {
-                            return;
-                        }
-                    }
-                    selectedDifficulty = diff;
-                    SPEED_PER_SEC = selectedDifficulty === 5 ? 240 : 160;
-                    broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
-                    
-                    if (selectedSong) {
-                        const key = `${selectedSong.id}_diff${selectedDifficulty}`;
-                        broadcast({
-                            type: 'leaderboardUpdate',
-                            songId: selectedSong.id,
-                            difficulty: selectedDifficulty,
-                            leaderboard: leaderboard[key] || []
+                        if (!p || !selectedSong) return;
+                        isDiff5Unlocked(selectedSong.id, p.name, (unlocked) => {
+                            if (unlocked) finishDifficultySelect();
                         });
+                    } else {
+                        finishDifficultySelect();
                     }
                 }
                 break;
@@ -634,7 +729,7 @@ wss.on('connection', (ws) => {
                         judgment = "Good";
                         sharedCombo++;
                     }
-                    p.score += scoreAdd;
+                    p.score += scoreAdd + (sharedCombo * 10);
                     p.combo = sharedCombo;
                     
                     broadcast({ 
