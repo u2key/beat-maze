@@ -440,9 +440,7 @@ wss.on('connection', (ws) => {
             }
             
             case 'startRequest': {
-                // Harden check: do not start if already playing OR if there are any active players still in game
-                const activePlayers = Object.values(players).filter(p => !p.spectator && p.alive).length;
-                if (gameState !== 'idle' || activePlayers > 0 || !selectedSong) return;
+                if (gameState !== 'idle' || !selectedSong) return;
                 
                 if (gameEndTimeout) {
                     clearTimeout(gameEndTimeout);
