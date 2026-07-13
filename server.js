@@ -440,7 +440,9 @@ wss.on('connection', (ws) => {
             }
             
             case 'startRequest': {
-                if (gameState !== 'idle' || !selectedSong) return;
+                // Harden check: do not start if already playing OR if there are any active players still in game
+                const activePlayers = Object.values(players).filter(p => !p.spectator && p.alive).length;
+                if (gameState !== 'idle' || activePlayers > 0 || !selectedSong) return;
                 
                 if (gameEndTimeout) {
                     clearTimeout(gameEndTimeout);
@@ -509,6 +511,20 @@ wss.on('connection', (ws) => {
                         elapsedT: currentT
                     }));
                 }
+                break;
+            }
+            
+            case 'syncRequest': {
+                // Client tab became active, resync state to prevent stale UI
+                const p = players[id];
+                ws.send(JSON.stringify({
+                    type: 'init',
+                    id,
+                    gameState,
+                    players,
+                    song: selectedSong ? { id: selectedSong.id, title: selectedSong.title } : null,
+                    difficulty: selectedDifficulty
+                }));
                 break;
             }
             

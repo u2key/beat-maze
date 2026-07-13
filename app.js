@@ -537,6 +537,15 @@ function playLocalTurnFeedback(judgment) {
     osc.start(now); osc.stop(now + 0.12);
 }
 
+// Handle tab visibility changes to prevent stale UI state when waking up
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        if (ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'syncRequest' }));
+        }
+    }
+});
+
 function playEcho() {
     if (!audioContext) return;
     const now = audioContext.currentTime;
@@ -811,7 +820,8 @@ retryBtn.addEventListener('click', () => {
 
 startGameBtn.addEventListener('click', () => {
     if (ws && ws.readyState === 1) {
-        if (gameState !== 'idle') {
+        const isSpectator = players[localId] && players[localId].spectator;
+        if (gameState !== 'idle' || isSpectator) {
             ws.send(JSON.stringify({ type: 'spectateRequest' }));
         } else {
             ws.send(JSON.stringify({ type: 'startRequest' }));
