@@ -223,6 +223,7 @@ function initWebSocket() {
                     break;
                     
                 case 'difficultySelected':
+                    console.log("difficultySelected received:", data.difficulty);
                     selectedDifficulty = data.difficulty;
                     updateDifficultyUI();
                     break;
@@ -233,7 +234,8 @@ function initWebSocket() {
                     break;
                     
                 case 'leaderboardUpdate':
-                    if (data.songId === selectedSongId && data.difficulty === selectedDifficulty) {
+                    console.log("leaderboardUpdate received:", data, "selectedSongId:", selectedSongId, "selectedDifficulty:", selectedDifficulty);
+                    if (data.songId === selectedSongId && Number(data.difficulty) === Number(selectedDifficulty)) {
                         currentLeaderboard = data.leaderboard || [];
                         renderLeaderboard();
                     }
@@ -460,7 +462,7 @@ function renderSongsList() {
 function renderLeaderboard() {
     const leaderboardTitle = document.querySelector('#leaderboard-panel h3');
     if (leaderboardTitle) {
-        const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : '★★★');
+        const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : (selectedDifficulty === 3 ? '★★★' : '★★★★★'));
         leaderboardTitle.textContent = `Leaderboard (${diffStars})`;
     }
     
