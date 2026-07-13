@@ -570,7 +570,8 @@ wss.on('connection', (ws) => {
                         judgment 
                     });
                 } else {
-                    if (newDir === nextTurn.dir && isInsideCorridor(p.x, p.y, turnPoints)) {
+                    const distToTurn = Math.hypot(p.x - nextTurn.x, p.y - nextTurn.y);
+                    if (newDir === nextTurn.dir && distToTurn < 60) {
                         p.turnIndex++;
                         p.currentDir = newDir;
                         p.x = nextTurn.x;

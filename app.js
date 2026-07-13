@@ -767,8 +767,9 @@ function handleTap() {
                     localP.trail.push({ x: nextTurn.x, y: nextTurn.y });
                     localPredictionActive = true;
                 } else {
-                    // Timing missed, but is it inside the corridor?
-                    if (isInsideCorridor(localP.x, localP.y, pts)) {
+                    // Timing missed, but if they are reasonably close to the turn (e.g. within 60 pixels), snap them back to center
+                    const distToTurn = Math.hypot(localP.x - nextTurn.x, localP.y - nextTurn.y);
+                    if (distToTurn < 60) {
                         // Snap to the correct turn point and keep going!
                         localP.turnIndex = nextIdx;
                         localP.currentDir = nextTurn.dir;
