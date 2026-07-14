@@ -78,6 +78,8 @@ let songList = [];
 let selectedSongId = null;
 let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
+let precalculatedPaths = {}; // playerId -> Path2D
+
 let currentLeaderboard = [];
 let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
 let diff5Unlocked = false;
@@ -911,9 +913,18 @@ function handleStartGame(startDelayMs, serverSegments) {
     
     // Precalculate paths
     precalculatedTracks = {};
+    precalculatedPaths = {};
     for (const id in players) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
+        
+        const pts = precalculatedTracks[id];
+        const path = new Path2D();
+        for (let i = 0; i < pts.length; i++) {
+            if (i === 0) path.moveTo(pts[i].x, pts[i].y);
+            else path.lineTo(pts[i].x, pts[i].y);
+        }
+        precalculatedPaths[id] = path;
         
         p.alive = !p.spectator;
         p.score = 0;
@@ -980,9 +991,18 @@ function handleStartSpectating(elapsedT, serverSegments) {
     }
     
     precalculatedTracks = {};
+    precalculatedPaths = {};
     for (const id in players) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
+        
+        const pts = precalculatedTracks[id];
+        const path = new Path2D();
+        for (let i = 0; i < pts.length; i++) {
+            if (i === 0) path.moveTo(pts[i].x, pts[i].y);
+            else path.lineTo(pts[i].x, pts[i].y);
+        }
+        precalculatedPaths[id] = path;
     }
     
     if (audioSource) {
@@ -1335,53 +1355,47 @@ function render(t, camX, camY) {
     
     // 1. Draw corridors
     for (const pid in players) {
-        const pts = precalculatedTracks[pid];
-        if (!pts) continue;
+        const path = precalculatedPaths[pid];
+        if (!path) continue;
         
-        ctx.lineWidth = WALL_HALF_WIDTH * 2;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
+        
+        ctx.lineWidth = WALL_HALF_WIDTH * 2;
         ctx.strokeStyle = '#1a1a2e';
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-            if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
-            else ctx.lineTo(pts[i].x, pts[i].y);
-        }
-        ctx.stroke();
+        ctx.stroke(path);
         
         ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
         ctx.strokeStyle = '#2a2a4a';
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-            if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
-            else ctx.lineTo(pts[i].x, pts[i].y);
-        }
-        ctx.stroke();
+        ctx.stroke(path);
         
         ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
         ctx.strokeStyle = '#12122a';
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-            if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
-            else ctx.lineTo(pts[i].x, pts[i].y);
-        }
-        ctx.stroke();
+        ctx.stroke(path);
     }
     
     // 2. Draw turn diamonds
     if (loadedTrackData && precalculatedTracks[localId]) {
         const pts = precalculatedTracks[localId];
         const localP = players[localId];
+        
+        const margin = (canvas.width / 2) / camScale + 100;
+        
         for (let i = 1; i < pts.length; i++) {
             const tp = pts[i];
+            // Viewport culling
+            if (Math.abs(tp.x - camX) > margin || Math.abs(tp.y - camY) > margin) continue;
+            
             const collected = localP && i <= localP.turnIndex;
             ctx.save();
             ctx.translate(tp.x, tp.y);
             ctx.rotate(Math.PI / 4);
             const sz = collected ? 5 : 7;
             ctx.fillStyle = collected ? '#333' : '#ffeb3b';
-            ctx.shadowColor = collected ? 'transparent' : '#ffeb3b';
-            ctx.shadowBlur = collected ? 0 : 12;
+            if (!collected) {
+                ctx.shadowColor = '#ffeb3b';
+                ctx.shadowBlur = 8;
+            }
             ctx.fillRect(-sz, -sz, sz * 2, sz * 2);
             ctx.restore();
         }

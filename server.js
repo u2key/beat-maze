@@ -483,12 +483,14 @@ function pointToSegmentDist(px, py, x1, y1, x2, y2) {
     return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 
-function isInsideCorridor(px, py, turnPoints) {
-    for (let i = 0; i < turnPoints.length - 1; i++) {
+function isInsideCorridor(px, py, turnPoints, turnIndex = 0) {
+    const startIdx = Math.max(0, turnIndex - 2);
+    const endIdx = Math.min(turnPoints.length - 1, turnIndex + 2);
+    for (let i = startIdx; i < endIdx; i++) {
         const p0 = turnPoints[i];
         const p1 = turnPoints[i + 1];
         const dist = pointToSegmentDist(px, py, p0.x, p0.y, p1.x, p1.y);
-        if (dist < WALL_HALF_WIDTH - 2) return true;
+        if (dist < Math.max(10, WALL_HALF_WIDTH - 2)) return true;
     }
     return false;
 }
@@ -904,7 +906,7 @@ function updatePhysics() {
                 }
                 
                 // Wall crash (only if not finished yet)
-                if (p.alive && !p.finished && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints)) {
+                if (p.alive && !p.finished && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints, p.turnIndex)) {
                     p.alive = false;
                     p.deathTime = t;
                     broadcast({ type: 'playerDead', id });
