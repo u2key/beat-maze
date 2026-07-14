@@ -344,26 +344,12 @@
         <div id="lobby-layout">
             <!-- Left Panel: Tracks List -->
             <div class="lobby-panel">
-                <h3>Tracks</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid rgba(255,255,255,0.05); padding-bottom: 8px; margin-bottom: 15px;">
+                    <h3 style="margin: 0; border-bottom: none; padding: 0; font-size: 1.3rem; font-weight: 700; color: #ffeb3b; text-transform: uppercase; letter-spacing: 1px;">Tracks</h3>
+                    <button id="add-track-btn" style="padding: 5px 12px; font-size: 0.8rem; background: linear-gradient(45deg, #1e88e5, #00b0ff); border: none; color: #fff; font-weight: 700; border-radius: 12px; cursor: pointer; font-family: 'Outfit'; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.2s;">Add Track</button>
+                </div>
                 <div id="songs-container">
                     <!-- Dynamically populated -->
-                </div>
-                
-                <!-- Upload Container -->
-                <div id="upload-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.15); border-radius: 12px;">
-                    <div style="font-size: 0.85rem; color: #b0bec5; font-weight: 700;">Upload MP3 (auto-generate corridor)</div>
-                    <label class="action-btn" style="padding: 8px 20px; font-size: 0.8rem; margin-top: 3px; cursor: pointer; background: linear-gradient(45deg, #1e88e5, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px;">
-                        Choose MP3
-                        <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
-                    </label>
-                </div>
-
-                <!-- Online Register Container -->
-                <div id="online-register-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.15); border-radius: 12px; width: 100%;">
-                    <div style="font-size: 0.85rem; color: #b0bec5; font-weight: 700;">Register Online Track (YouTube, etc.)</div>
-                    <input type="text" id="online-track-name" class="online-input" placeholder="Track Name (e.g. My Favorite Song)">
-                    <input type="text" id="online-url" class="online-input" placeholder="URL">
-                    <button id="register-online-btn" class="action-btn" style="padding: 8px 20px; font-size: 0.8rem; margin-top: 3px; cursor: pointer; background: linear-gradient(45deg, #00e676, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px; width: 100%;">Download & Register</button>
                 </div>
             </div>
             
@@ -456,6 +442,38 @@
             </div>
 
             <button id="results-close-btn">Back to Lobby</button>
+        </div>
+    </div>
+
+    <!-- Add Track Modal -->
+    <div id="add-track-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,12,18,0.85); backdrop-filter: blur(12px); z-index: 3000; display: none; align-items: center; justify-content: center; font-family: 'Outfit', sans-serif;">
+        <div class="results-card" style="width: 400px; padding: 30px; display: flex; flex-direction: column; gap: 20px;">
+            <h3 style="font-size: 1.6rem; color: #ffeb3b; text-align: center; margin-bottom: 5px;">ADD NEW TRACK</h3>
+            
+            <!-- Tab Headers -->
+            <div style="display: flex; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
+                <button id="tab-upload-btn" style="flex: 1; padding: 8px; background: none; border: none; color: #00e676; font-weight: 700; cursor: pointer; border-bottom: 2px solid #00e676; font-family: 'Outfit';">Local MP3</button>
+                <button id="tab-online-btn" style="flex: 1; padding: 8px; background: none; border: none; color: #b0bec5; font-weight: 700; cursor: pointer; font-family: 'Outfit';">Online URL</button>
+            </div>
+            
+            <!-- Tab Content: Upload -->
+            <div id="tab-upload-content" style="display: flex; flex-direction: column; align-items: center; gap: 15px;">
+                <div style="font-size: 0.85rem; color: #b0bec5; text-align: center;">Upload an MP3 file to automatically generate a corridor.</div>
+                <label class="action-btn" style="padding: 10px 24px; font-size: 0.85rem; cursor: pointer; background: linear-gradient(45deg, #1e88e5, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px;">
+                    Choose MP3
+                    <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
+                </label>
+            </div>
+            
+            <!-- Tab Content: Online -->
+            <div id="tab-online-content" style="display: none; flex-direction: column; gap: 12px;">
+                <div style="font-size: 0.85rem; color: #b0bec5; text-align: center; margin-bottom: 5px;">Download audio from YouTube or other online sources.</div>
+                <input type="text" id="online-track-name" class="online-input" placeholder="Track Name (e.g. My Song)">
+                <input type="text" id="online-url" class="online-input" placeholder="URL (YouTube, etc.)">
+                <button id="register-online-btn" class="action-btn" style="padding: 10px 20px; font-size: 0.85rem; cursor: pointer; background: linear-gradient(45deg, #00e676, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px; width: 100%;">Download & Register</button>
+            </div>
+            
+            <button id="close-add-track-btn" style="margin-top: 10px; padding: 8px 16px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.4); color: #fff; border-radius: 12px; cursor: pointer; font-family: 'Outfit'; font-weight: 700; transition: all 0.2s;">Cancel</button>
         </div>
     </div>
 

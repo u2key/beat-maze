@@ -35,6 +35,14 @@ const onlineTrackNameInput = document.getElementById('online-track-name');
 const onlineUrlInput = document.getElementById('online-url');
 const registerOnlineBtn = document.getElementById('register-online-btn');
 
+const addTrackBtn = document.getElementById('add-track-btn');
+const addTrackModal = document.getElementById('add-track-modal');
+const closeAddTrackBtn = document.getElementById('close-add-track-btn');
+const tabUploadBtn = document.getElementById('tab-upload-btn');
+const tabOnlineBtn = document.getElementById('tab-online-btn');
+const tabUploadContent = document.getElementById('tab-upload-content');
+const tabOnlineContent = document.getElementById('tab-online-content');
+
 // --- Game Constants ---
 const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
@@ -620,6 +628,9 @@ audioFileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     
+    // Close modal
+    if (addTrackModal) addTrackModal.style.display = 'none';
+    
     const CHUNK_SIZE = 500 * 1024; // 500 KB chunks
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const uploadId = Math.random().toString(36).substring(2, 15);
@@ -683,6 +694,9 @@ registerOnlineBtn.addEventListener('click', async () => {
         return;
     }
     
+    // Close modal
+    if (addTrackModal) addTrackModal.style.display = 'none';
+    
     downloadStatus.textContent = "Requesting download and registration from online source...";
     registerOnlineBtn.disabled = true;
     
@@ -717,6 +731,46 @@ registerOnlineBtn.addEventListener('click', async () => {
     
     registerOnlineBtn.disabled = false;
 });
+
+// --- Add Track Modal Logic ---
+if (addTrackBtn) {
+    addTrackBtn.addEventListener('click', () => {
+        addTrackModal.style.display = 'flex';
+        // Reset tabs to upload content
+        tabUploadContent.style.display = 'flex';
+        tabOnlineContent.style.display = 'none';
+        tabUploadBtn.style.color = '#00e676';
+        tabUploadBtn.style.borderBottom = '2px solid #00e676';
+        tabOnlineBtn.style.color = '#b0bec5';
+        tabOnlineBtn.style.borderBottom = 'none';
+    });
+}
+
+if (closeAddTrackBtn) {
+    closeAddTrackBtn.addEventListener('click', () => {
+        addTrackModal.style.display = 'none';
+    });
+}
+
+if (tabUploadBtn && tabOnlineBtn) {
+    tabUploadBtn.addEventListener('click', () => {
+        tabUploadContent.style.display = 'flex';
+        tabOnlineContent.style.display = 'none';
+        tabUploadBtn.style.color = '#00e676';
+        tabUploadBtn.style.borderBottom = '2px solid #00e676';
+        tabOnlineBtn.style.color = '#b0bec5';
+        tabOnlineBtn.style.borderBottom = 'none';
+    });
+    
+    tabOnlineBtn.addEventListener('click', () => {
+        tabUploadContent.style.display = 'none';
+        tabOnlineContent.style.display = 'flex';
+        tabOnlineBtn.style.color = '#00e676';
+        tabOnlineBtn.style.borderBottom = '2px solid #00e676';
+        tabUploadBtn.style.color = '#b0bec5';
+        tabUploadBtn.style.borderBottom = 'none';
+    });
+}
 
 // --- Audio Controls & Synth ---
 function unlockAudio() {
