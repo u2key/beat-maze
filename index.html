@@ -298,6 +298,19 @@
             width: 10px; height: 10px; border-radius: 50%;
         }
 
+        /* --- Online Song Register --- */
+        .online-input {
+            width: 100%; padding: 8px 12px; border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.02);
+            color: #fff; font-family: 'Outfit', sans-serif; font-size: 0.8rem;
+            outline: none; transition: all 0.3s;
+        }
+        .online-input:focus {
+            border-color: #00e676;
+            background: rgba(255,255,255,0.06);
+            box-shadow: 0 0 8px rgba(0,230,118,0.2);
+        }
+
         /* --- Mobile Responsiveness --- */
         @media (max-width: 768px) {
             #join-overlay h1 { font-size: 3rem; }
@@ -343,6 +356,14 @@
                         Choose MP3
                         <input type="file" id="audio-file-input" accept=".mp3" style="display: none;">
                     </label>
+                </div>
+
+                <!-- Online Register Container -->
+                <div id="online-register-container" style="margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.15); border-radius: 12px; width: 100%;">
+                    <div style="font-size: 0.85rem; color: #b0bec5; font-weight: 700;">Register Online Track (YouTube, etc.)</div>
+                    <input type="text" id="online-track-name" class="online-input" placeholder="Track Name (e.g. My Favorite Song)">
+                    <input type="text" id="online-url" class="online-input" placeholder="URL">
+                    <button id="register-online-btn" class="action-btn" style="padding: 8px 20px; font-size: 0.8rem; margin-top: 3px; cursor: pointer; background: linear-gradient(45deg, #00e676, #00b0ff); border-radius: 20px; text-transform: uppercase; letter-spacing: 1px; width: 100%;">Download & Register</button>
                 </div>
             </div>
             

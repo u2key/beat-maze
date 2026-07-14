@@ -31,6 +31,9 @@ const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
 const leaderboardList = document.getElementById('leaderboard-list');
 const audioFileInput = document.getElementById('audio-file-input');
+const onlineTrackNameInput = document.getElementById('online-track-name');
+const onlineUrlInput = document.getElementById('online-url');
+const registerOnlineBtn = document.getElementById('register-online-btn');
 
 // --- Game Constants ---
 const DIR_VECS = [
@@ -668,6 +671,51 @@ audioFileInput.addEventListener('change', async (e) => {
     }
     
     audioFileInput.value = '';
+});
+
+// Online song registration click handler
+registerOnlineBtn.addEventListener('click', async () => {
+    const name = onlineTrackNameInput.value.trim();
+    const url = onlineUrlInput.value.trim();
+    
+    if (!name || !url) {
+        alert("Please enter both Track Name and URL.");
+        return;
+    }
+    
+    downloadStatus.textContent = "Requesting download and registration from online source...";
+    registerOnlineBtn.disabled = true;
+    
+    try {
+        const res = await fetch('./api/songs/register-online', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name, url })
+        });
+        
+        if (!res.ok) {
+            const errData = await res.json();
+            downloadStatus.textContent = `Failed: ${errData.error || res.statusText}`;
+            registerOnlineBtn.disabled = false;
+            return;
+        }
+        
+        const data = await res.json();
+        if (data.success) {
+            downloadStatus.textContent = "Download started! The track will be registered and processed in the background.";
+            onlineTrackNameInput.value = '';
+            onlineUrlInput.value = '';
+        } else {
+            downloadStatus.textContent = data.error || "Failed to start download.";
+        }
+    } catch (err) {
+        downloadStatus.textContent = "Failed to connect to the server.";
+        console.error(err);
+    }
+    
+    registerOnlineBtn.disabled = false;
 });
 
 // --- Audio Controls & Synth ---
