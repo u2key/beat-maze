@@ -1418,30 +1418,22 @@ function updateDifficultyUI() {
             diff5Btn.textContent = '★★★★★ 🔒';
             diff5Btn.style.cursor = 'not-allowed';
             diff5Btn.title = 'Clear ★★★ level 100% to unlock!';
-            if (selectedDifficulty === 5) {
-                selectedDifficulty = 3;
-                SPEED_PER_SEC = 160;
-            }
         }
     }
 
     diffBtns.forEach(btn => {
         const diff = parseInt(btn.getAttribute('data-diff'));
         
-        // If 5 is locked and this is the 5 button, style it as locked
-        if (diff === 5 && !diff5Unlocked) {
-            btn.classList.remove('active');
-            btn.style.borderColor = 'rgba(255,255,255,0.1)';
-            btn.style.background = 'rgba(255,255,255,0.05)';
-            btn.style.color = 'rgba(255,255,255,0.3)';
-            return;
-        }
-
         if (diff === selectedDifficulty) {
             btn.classList.add('active');
             btn.style.borderColor = (diff === 5) ? '#ff1744' : '#00e676';
             btn.style.background = (diff === 5) ? 'rgba(255, 23, 68, 0.1)' : 'rgba(0, 230, 118, 0.1)';
             btn.style.color = (diff === 5) ? '#ff1744' : '#00e676';
+        } else if (diff === 5 && !diff5Unlocked) {
+            btn.classList.remove('active');
+            btn.style.borderColor = 'rgba(255,255,255,0.1)';
+            btn.style.background = 'rgba(255,255,255,0.05)';
+            btn.style.color = 'rgba(255,255,255,0.3)';
         } else {
             btn.classList.remove('active');
             btn.style.borderColor = 'rgba(255,255,255,0.2)';
