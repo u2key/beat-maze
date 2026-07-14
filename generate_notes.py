@@ -145,7 +145,7 @@ def analyze_mp3(file_path, output_json_path):
     })
     
     for t in selected_times:
-        current_dir = 1 - current_dir
+        current_dir = (current_dir - 1) % 4
         segments.append({
             "time": t,
             "dir": current_dir

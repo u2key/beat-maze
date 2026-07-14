@@ -444,7 +444,9 @@ app.delete('/api/songs/:id', (req, res) => {
 // --- Game Constants ---
 const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
-    { x: 0, y: -1 }   // dir 1: up (-y)
+    { x: 0, y: -1 },  // dir 1: up (-y)
+    { x: -1, y: 0 },  // dir 2: left (-x)
+    { x: 0, y: 1 }    // dir 3: down (+y)
 ];
 let SPEED_PER_SEC = 160;
 const WALL_HALF_WIDTH = 25;
