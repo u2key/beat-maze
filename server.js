@@ -291,52 +291,32 @@ app.post('/api/songs/register-online', (req, res) => {
     res.json({ success: true, status: 'processing' });
     
     // Background download and conversion task
-    const tempM4aBase = path.join(__dirname, 'songs', `temp_${id}.m4a`);
-    const downloadedMp4 = `${tempM4aBase}.mp4`;
     const finalMp3Path = path.join(__dirname, 'songs', `${id}.mp3`);
     const finalJsonPath = path.join(__dirname, 'songs', `${id}.json`);
-    const ffmpegVideoPath = '/home/ubuntu/favorite-configurations/scripts/ffmpeg-video';
     
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Running ffmpeg-video download...\n`);
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Running yt-dlp audio-only download...\n`);
     
-    execFile(ffmpegVideoPath, ['--yt-dlp', '--input-file', url, '--output-file', tempM4aBase], (err1, stdout1, stderr1) => {
+    const ytDlpPath = '/home/ubuntu/favorite-configurations/scripts/yt-dlp';
+    const ytDlpArgs = ['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', finalMp3Path, url];
+    
+    execFile(ytDlpPath, ytDlpArgs, { maxBuffer: 50 * 1024 * 1024 }, (err1, stdout1, stderr1) => {
         if (err1) {
-            fs.appendFileSync(logPath, `[${new Date().toISOString()}] ffmpeg-video download failed: ${err1}\nstderr: ${stderr1}\n`);
+            fs.appendFileSync(logPath, `[${new Date().toISOString()}] yt-dlp download failed: ${err1}\nstderr: ${stderr1}\n`);
             return;
         }
         
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] Download succeeded. Checking ${downloadedMp4}...\n`);
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] Audio extraction succeeded. Generating notes...\n`);
         
-        if (!fs.existsSync(downloadedMp4)) {
-            fs.appendFileSync(logPath, `[${new Date().toISOString()}] Error: Downloaded file not found at ${downloadedMp4}\n`);
-            return;
-        }
-        
-        // Convert to mp3
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] Converting to MP3...\n`);
-        const ffmpegArgs = ['-y', '-i', downloadedMp4, '-vn', '-c:a', 'libmp3lame', '-q:a', '2', finalMp3Path];
-        execFile('ffmpeg', ffmpegArgs, (err2, stdout2, stderr2) => {
-            // Delete temp file
-            try { fs.unlinkSync(downloadedMp4); } catch(e) {}
-            
-            if (err2) {
-                fs.appendFileSync(logPath, `[${new Date().toISOString()}] MP3 conversion failed: ${err2}\nstderr: ${stderr2}\n`);
+        // Run notes generator
+        execFile('python3', ['generate_notes.py', finalMp3Path, finalJsonPath], { maxBuffer: 50 * 1024 * 1024 }, (err3, stdout3, stderr3) => {
+            if (err3) {
+                fs.appendFileSync(logPath, `[${new Date().toISOString()}] Notes generator failed: ${err3}\nstderr: ${stderr3}\n`);
+                try { fs.unlinkSync(finalMp3Path); } catch(e) {}
                 return;
             }
             
-            fs.appendFileSync(logPath, `[${new Date().toISOString()}] MP3 conversion succeeded. Generating notes...\n`);
-            
-            // Run notes generator
-            execFile('python3', ['generate_notes.py', finalMp3Path, finalJsonPath], (err3, stdout3, stderr3) => {
-                if (err3) {
-                    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Notes generator failed: ${err3}\nstderr: ${stderr3}\n`);
-                    try { fs.unlinkSync(finalMp3Path); } catch(e) {}
-                    return;
-                }
-                
-                fs.appendFileSync(logPath, `[${new Date().toISOString()}] Note generation complete. Song registered: ${id}\n`);
-                broadcast({ type: 'songsUpdated' });
-            });
+            fs.appendFileSync(logPath, `[${new Date().toISOString()}] Note generation complete. Song registered: ${id}\n`);
+            broadcast({ type: 'songsUpdated' });
         });
     });
 });
@@ -410,7 +390,7 @@ app.post('/api/songs/upload-chunk', uploadChunk.single('audioChunk'), (req, res)
             res.json({ success: true, completed: true, status: 'processing' });
             
             // Run generator in background
-            exec(`python3 generate_notes.py "${finalMp3Path}" "${finalJsonPath}"`, (error, stdout, stderr) => {
+            execFile('python3', ['generate_notes.py', finalMp3Path, finalJsonPath], { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
                 if (error) {
                     fs.appendFileSync(logPath, `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
                     fs.appendFileSync(path.join(__dirname, 'error.log'), `[${new Date().toISOString()}] Python error: ${error}\nstdout: ${stdout}\nstderr: ${stderr}\n`);
