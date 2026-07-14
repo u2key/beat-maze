@@ -1341,16 +1341,17 @@ function render(t, camX, camY) {
         
         const pos = getSmoothPlayerPosition(p, t);
         
-        if (p.trail && p.trail.length >= 2) {
+        if (pathData && pathData.length > 0) {
             ctx.strokeStyle = p.color;
             ctx.lineWidth = id === localId ? 6 : 4;
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             ctx.globalAlpha = id === localId ? 0.9 : 0.5;
             ctx.beginPath();
-            ctx.moveTo(p.trail[0].x, p.trail[0].y);
-            for (let i = 1; i < p.trail.length; i++) {
-                ctx.lineTo(p.trail[i].x, p.trail[i].y);
+            ctx.moveTo(pathData[0].x, pathData[0].y);
+            const limit = Math.min(pathData.length - 1, p.turnIndex || 0);
+            for (let i = 1; i <= limit; i++) {
+                ctx.lineTo(pathData[i].x, pathData[i].y);
             }
             ctx.lineTo(pos.x, pos.y);
             ctx.stroke();

@@ -967,7 +967,6 @@ function updatePhysics() {
                 combo: p.combo,
                 turnIndex: p.turnIndex,
                 currentDir: p.currentDir,
-                trail: p.trail,
                 finished: p.finished,
                 anchor: p.anchor
             };
