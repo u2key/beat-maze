@@ -101,6 +101,24 @@ let drawReqId;
 let localPredictionActive = false;
 let notesHitCount = 0;
 
+// --- Editor Mode State ---
+let isEditorMode = false;
+let editorSongId = null;
+let editorSegments = [];
+let editorTracks = [];
+let editorPath2D = null;
+let editorCurrentTime = 0.0;
+let editorIsPlaying = false;
+let editorAudioSource = null;
+let editorAudioStartTime = 0;
+let editorZoomScale = 1.0;
+let draggedTurnIndex = null;
+let initialTurnTime = 0.0;
+let initialMouseX = 0;
+let initialMouseY = 0;
+let hasDragged = false;
+let lastCheckedEditorTime = 0.0;
+
 // Judgment Popups System
 let judgmentPopups = [];
 function showJudgmentPopup(text, color, x, y) {
@@ -256,6 +274,28 @@ function initWebSocket() {
                     console.log("difficultySelected received:", data.difficulty);
                     selectedDifficulty = data.difficulty;
                     updateDifficultyUI();
+                    if (selectedDifficulty >= 100 && selectedSongId) {
+                        const song = songList.find(s => s.id === selectedSongId);
+                        fetch(`./api/custom-maps?song_id=${selectedSongId}`)
+                            .then(res => res.json())
+                            .then(maps => {
+                                const customMapId = selectedDifficulty - 100;
+                                const map = maps.find(m => m.id === customMapId);
+                                if (map && song) {
+                                    const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
+                                    loadedTrackData = {
+                                        title: map.title,
+                                        bpm: song.bpm || 120,
+                                        leadIn: song.leadIn || 2.5,
+                                        segments: segments
+                                    };
+                                    totalDuration = segments[segments.length - 1].time;
+                                }
+                                renderSongsList();
+                            });
+                    } else {
+                        renderSongsList();
+                    }
                     break;
                     
                 case 'pong':
@@ -470,8 +510,20 @@ async function fetchSongsList() {
 function renderSongsList() {
     songsContainer.innerHTML = '';
     songList.forEach(song => {
+        const isSelected = selectedSongId === song.id;
         const div = document.createElement('div');
-        div.className = `song-item ${selectedSongId === song.id ? 'selected' : ''}`;
+        div.className = `song-item ${isSelected ? 'selected' : ''}`;
+        
+        if (isSelected && selectedDifficulty === 'custom') {
+            div.style.flexDirection = 'column';
+            div.style.alignItems = 'stretch';
+        }
+        
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.alignItems = 'center';
+        row.style.width = '100%';
         
         const textDiv = document.createElement('div');
         const durationMin = Math.floor(song.duration / 60);
@@ -482,7 +534,7 @@ function renderSongsList() {
             <div class="song-title">${song.title}</div>
             <div class="song-meta">${song.bpm} BPM | Duration: ${durationStr}</div>
         `;
-        div.appendChild(textDiv);
+        row.appendChild(textDiv);
         
         const deleteBtn = document.createElement('button');
         deleteBtn.innerHTML = '🗑️';
@@ -516,7 +568,88 @@ function renderSongsList() {
             }
         });
         
-        div.appendChild(deleteBtn);
+        row.appendChild(deleteBtn);
+        div.appendChild(row);
+        
+        if (isSelected && selectedDifficulty === 'custom') {
+            const customContainer = document.createElement('div');
+            customContainer.className = 'custom-maps-list';
+            customContainer.style.marginTop = '10px';
+            customContainer.style.padding = '10px';
+            customContainer.style.background = 'rgba(0,0,0,0.3)';
+            customContainer.style.borderRadius = '8px';
+            customContainer.style.border = '1px solid rgba(255,255,255,0.1)';
+            customContainer.style.display = 'flex';
+            customContainer.style.flexDirection = 'column';
+            customContainer.style.gap = '8px';
+            
+            customContainer.innerHTML = '<div style="color: #b0bec5; font-style: italic; font-size: 0.9rem;">Loading custom maps...</div>';
+            div.appendChild(customContainer);
+            
+            fetch(`./api/custom-maps?song_id=${song.id}`)
+                .then(res => res.json())
+                .then(maps => {
+                    customContainer.innerHTML = '';
+                    if (maps.length === 0) {
+                        customContainer.innerHTML = '<div style="color: #b0bec5; font-style: italic; font-size: 0.85rem; padding: 5px;">No custom maps found.</div>';
+                    } else {
+                        maps.forEach(map => {
+                            const mapItem = document.createElement('div');
+                            const isMapSelected = selectedDifficulty === 100 + map.id;
+                            mapItem.style.padding = '8px 12px';
+                            mapItem.style.borderRadius = '6px';
+                            mapItem.style.background = isMapSelected ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255,255,255,0.03)';
+                            mapItem.style.border = isMapSelected ? '1px solid #00e676' : '1px solid rgba(255,255,255,0.05)';
+                            mapItem.style.cursor = 'pointer';
+                            mapItem.style.display = 'flex';
+                            mapItem.style.justifyContent = 'space-between';
+                            mapItem.style.alignItems = 'center';
+                            mapItem.style.transition = 'all 0.2s';
+                            
+                            mapItem.innerHTML = `
+                                <div style="text-align: left;">
+                                    <div style="font-weight: 700; font-size: 0.9rem; color: ${isMapSelected ? '#00e676' : '#fff'};">${map.title}</div>
+                                    <div style="font-size: 0.75rem; color: #b0bec5;">by ${map.creator_name}</div>
+                                </div>
+                            `;
+                            
+                            mapItem.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                selectCustomMap(map);
+                            });
+                            
+                            customContainer.appendChild(mapItem);
+                        });
+                    }
+                    
+                    const createNewBtn = document.createElement('button');
+                    createNewBtn.textContent = '＋ 新規作成';
+                    createNewBtn.style.padding = '8px';
+                    createNewBtn.style.background = 'rgba(0, 230, 118, 0.2)';
+                    createNewBtn.style.border = '1px dashed #00e676';
+                    createNewBtn.style.color = '#00e676';
+                    createNewBtn.style.borderRadius = '6px';
+                    createNewBtn.style.cursor = 'pointer';
+                    createNewBtn.style.fontWeight = '700';
+                    createNewBtn.style.fontFamily = 'Outfit';
+                    createNewBtn.style.fontSize = '0.85rem';
+                    createNewBtn.style.width = '100%';
+                    createNewBtn.style.marginTop = '5px';
+                    createNewBtn.style.transition = 'all 0.2s';
+                    
+                    createNewBtn.addEventListener('mouseenter', () => createNewBtn.style.background = 'rgba(0, 230, 118, 0.3)');
+                    createNewBtn.addEventListener('mouseleave', () => createNewBtn.style.background = 'rgba(0, 230, 118, 0.2)');
+                    createNewBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        enterEditorMode(song.id);
+                    });
+                    customContainer.appendChild(createNewBtn);
+                })
+                .catch(err => {
+                    console.error(err);
+                    customContainer.innerHTML = '<div style="color: #ff5252; font-size: 0.85rem;">Failed to load custom maps.</div>';
+                });
+        }
         
         div.addEventListener('click', () => {
             if (ws && ws.readyState === 1) {
@@ -1215,13 +1348,62 @@ function handleTap() {
 window.addEventListener('pointerdown', (e) => {
     if (joinOverlay.style.display !== 'none' && joinOverlay.style.display !== '') return;
     if (songSelection.style.display !== 'none') return;
-    if (e.target.tagName === 'BUTTON') return;
+    if (e.target.closest('#editor-controls') || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+    
+    if (isEditorMode) {
+        if (editorIsPlaying) {
+            const tapTime = audioContext.currentTime - editorAudioStartTime;
+            const calibratedTime = tapTime + calibrationOffset;
+            const beatDuration = 60.0 / editorBPM;
+            const stepSize = beatDuration / 4;
+            
+            let snappedTime;
+            if (editorSegments.length <= 1) {
+                snappedTime = calibratedTime;
+            } else {
+                const firstTime = editorSegments[1].time;
+                snappedTime = firstTime + Math.round((calibratedTime - firstTime) / stepSize) * stepSize;
+            }
+            
+            if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.05)) {
+                editorSegments.push({ time: snappedTime, dir: 0 });
+                sortAndRebuildDirections();
+                playLocalTurnFeedback('excellent', editorSegments.length - 1);
+            }
+        }
+        return;
+    }
     handleTap();
 });
 window.addEventListener('keydown', (e) => {
     if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) {
         if (songSelection.style.display !== 'none') return;
+        if (document.activeElement.tagName === 'INPUT') return;
         e.preventDefault();
+        
+        if (isEditorMode) {
+            if (editorIsPlaying) {
+                const tapTime = audioContext.currentTime - editorAudioStartTime;
+                const calibratedTime = tapTime + calibrationOffset;
+                const beatDuration = 60.0 / editorBPM;
+                const stepSize = beatDuration / 4;
+                
+                let snappedTime;
+                if (editorSegments.length <= 1) {
+                    snappedTime = calibratedTime;
+                } else {
+                    const firstTime = editorSegments[1].time;
+                    snappedTime = firstTime + Math.round((calibratedTime - firstTime) / stepSize) * stepSize;
+                }
+                
+                if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.05)) {
+                    editorSegments.push({ time: snappedTime, dir: 0 });
+                    sortAndRebuildDirections();
+                    playLocalTurnFeedback('excellent', editorSegments.length - 1);
+                }
+            }
+            return;
+        }
         handleTap();
     }
 });
@@ -1310,6 +1492,36 @@ function gameLoop() {
     drawReqId = requestAnimationFrame(gameLoop);
     
     const now = audioContext.currentTime;
+    
+    if (isEditorMode) {
+        if (editorIsPlaying) {
+            editorCurrentTime = now - editorAudioStartTime;
+            if (editorCurrentTime >= loadedAudioBuffer.duration) {
+                editorPause();
+                editorCurrentTime = loadedAudioBuffer.duration;
+            }
+            
+            // Auto-play turns feedback sound
+            editorTracks.forEach((tp, idx) => {
+                if (idx > 0 && tp.time > lastCheckedEditorTime && tp.time <= editorCurrentTime) {
+                    playLocalTurnFeedback('excellent', idx);
+                }
+            });
+            
+            lastCheckedEditorTime = editorCurrentTime;
+            
+            // Update timeline UI
+            const editorTimeline = document.getElementById('editor-timeline');
+            if (editorTimeline) editorTimeline.value = editorCurrentTime;
+            const timeCurrent = document.getElementById('editor-time-current');
+            if (timeCurrent) timeCurrent.textContent = formatTime(editorCurrentTime);
+        }
+        
+        const editorPos = getEditorPositionAtTime(editorCurrentTime);
+        render(editorCurrentTime, editorPos.x, editorPos.y);
+        return;
+    }
+    
     let t = now - gameStartTime;
     
     if (gameState === 'starting') {
@@ -1355,7 +1567,7 @@ function render(t, camX, camY) {
     
     // Dynamic base scale: scales down on smaller screens (e.g., mobile) to maintain same field of view
     const baseScale = Math.max(0.4, Math.min(canvas.width, canvas.height) / 1000);
-    let camScale = baseScale;
+    let camScale = isEditorMode ? editorZoomScale : baseScale;
     
     if (gameState === 'starting') {
         const elapsed = audioContext.currentTime - zoomStartTime;
@@ -1386,29 +1598,67 @@ function render(t, camX, camY) {
     ctx.scale(camScale, camScale);
     ctx.translate(-camX, -camY);
     
-    // 1. Draw corridors
-    for (const pid in players) {
-        const path = precalculatedPaths[pid];
-        if (!path) continue;
-        
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        
-        ctx.lineWidth = WALL_HALF_WIDTH * 2;
-        ctx.strokeStyle = '#1a1a2e';
-        ctx.stroke(path);
-        
-        ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
-        ctx.strokeStyle = '#2a2a4a';
-        ctx.stroke(path);
-        
-        ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
-        ctx.strokeStyle = '#12122a';
-        ctx.stroke(path);
+    if (isEditorMode) {
+        if (editorPath2D) {
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2;
+            ctx.strokeStyle = '#1a1a2e';
+            ctx.stroke(editorPath2D);
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
+            ctx.strokeStyle = '#2a2a4a';
+            ctx.stroke(editorPath2D);
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
+            ctx.strokeStyle = '#12122a';
+            ctx.stroke(editorPath2D);
+        }
+    } else {
+        // 1. Draw corridors
+        for (const pid in players) {
+            const path = precalculatedPaths[pid];
+            if (!path) continue;
+            
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2;
+            ctx.strokeStyle = '#1a1a2e';
+            ctx.stroke(path);
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
+            ctx.strokeStyle = '#2a2a4a';
+            ctx.stroke(path);
+            
+            ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
+            ctx.strokeStyle = '#12122a';
+            ctx.stroke(path);
+        }
     }
     
     // 2. Draw turn diamonds
-    if (loadedTrackData && precalculatedTracks[localId]) {
+    if (isEditorMode) {
+        const margin = (canvas.width / 2) / camScale + 100;
+        for (let i = 1; i < editorTracks.length; i++) {
+            const tp = editorTracks[i];
+            if (Math.abs(tp.x - camX) > margin || Math.abs(tp.y - camY) > margin) continue;
+            
+            const passed = editorCurrentTime >= tp.time;
+            ctx.save();
+            ctx.translate(tp.x, tp.y);
+            ctx.rotate(Math.PI / 4);
+            const sz = passed ? 5 : 7;
+            ctx.fillStyle = passed ? '#333' : '#ffeb3b';
+            if (!passed) {
+                ctx.shadowColor = '#ffeb3b';
+                ctx.shadowBlur = 8;
+            }
+            ctx.fillRect(-sz, -sz, sz * 2, sz * 2);
+            ctx.restore();
+        }
+    } else if (loadedTrackData && precalculatedTracks[localId]) {
         const pts = precalculatedTracks[localId];
         const localP = players[localId];
         
@@ -1435,116 +1685,137 @@ function render(t, camX, camY) {
     }
     
     // 3. Draw trails and player dots
-    const localP = players[localId];
-    const localPathData = precalculatedTracks[localId];
-    let refP = (localP && !localP.spectator) ? localP : null;
-    if (!refP) {
+    if (isEditorMode) {
+        const editorPos = getEditorPositionAtTime(editorCurrentTime);
+        ctx.fillStyle = '#00e676';
+        ctx.shadowColor = '#00e676';
+        ctx.shadowBlur = 25;
+        ctx.beginPath();
+        ctx.arc(editorPos.x, editorPos.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
+        // Draw player name above the circle
+        ctx.save();
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 12px Outfit';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+        ctx.fillText("YOU", editorPos.x, editorPos.y - 15);
+        ctx.restore();
+    } else {
+        const localP = players[localId];
+        const localPathData = precalculatedTracks[localId];
+        let refP = (localP && !localP.spectator) ? localP : null;
+        if (!refP) {
+            for (const id in players) {
+                const p = players[id];
+                if (p.alive && !p.spectator) {
+                    refP = p;
+                    break;
+                }
+            }
+        }
+        const refPathData = refP ? precalculatedTracks[refP.id] : null;
+
         for (const id in players) {
             const p = players[id];
-            if (p.alive && !p.spectator) {
-                refP = p;
-                break;
+            const pathData = precalculatedTracks[id];
+            if (!pathData) continue;
+            
+            let pos;
+            let pTurnIndex = p.turnIndex || 0;
+            let opacity = id === localId ? 0.9 : 0.5;
+            let dotOpacity = 1.0;
+            
+            if (!p.alive) {
+                const elapsed = Date.now() - (p.deathTime || Date.now());
+                const fadeDuration = 500; // 500ms fadeout
+                if (elapsed > fadeDuration) {
+                    continue; // Do not draw this player at all
+                }
+                const ratio = 1 - (elapsed / fadeDuration);
+                opacity = ratio * (id === localId ? 0.9 : 0.5);
+                dotOpacity = ratio;
             }
-        }
-    }
-    const refPathData = refP ? precalculatedTracks[refP.id] : null;
 
-    for (const id in players) {
-        const p = players[id];
-        const pathData = precalculatedTracks[id];
-        if (!pathData) continue;
-        
-        let pos;
-        let pTurnIndex = p.turnIndex || 0;
-        let opacity = id === localId ? 0.9 : 0.5;
-        let dotOpacity = 1.0;
-        
-        if (!p.alive) {
-            const elapsed = Date.now() - (p.deathTime || Date.now());
-            const fadeDuration = 500; // 500ms fadeout
-            if (elapsed > fadeDuration) {
-                continue; // Do not draw this player at all
-            }
-            const ratio = 1 - (elapsed / fadeDuration);
-            opacity = ratio * (id === localId ? 0.9 : 0.5);
-            dotOpacity = ratio;
-        }
-
-        if (id === localId) {
-            pos = getSmoothPlayerPosition(p, t);
-            pTurnIndex = p.turnIndex || 0;
-        } else {
-            // Replicate reference player's position and trail, offset by spawn index difference
-            if (refP && refPathData) {
-                const diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
-                const diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
-                const refSmooth = getSmoothPlayerPosition(refP, t);
-                pos = { x: refSmooth.x + diffX, y: refSmooth.y + diffY };
-                pTurnIndex = refP.turnIndex || 0;
-            } else {
+            if (id === localId) {
                 pos = getSmoothPlayerPosition(p, t);
                 pTurnIndex = p.turnIndex || 0;
-            }
-        }
-        
-        if (pathData && pathData.length > 0) {
-            ctx.strokeStyle = p.color;
-            ctx.lineWidth = id === localId ? 6 : 4;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.globalAlpha = opacity;
-            ctx.beginPath();
-            
-            let diffX = 0, diffY = 0;
-            let refPath = pathData;
-            let refTurnIdx = pTurnIndex;
-            
-            if (id !== localId && refP && refPathData) {
-                diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
-                diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
-                refPath = refPathData;
-                refTurnIdx = refP.turnIndex || 0;
+            } else {
+                // Replicate reference player's position and trail, offset by spawn index difference
+                if (refP && refPathData) {
+                    const diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
+                    const diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
+                    const refSmooth = getSmoothPlayerPosition(refP, t);
+                    pos = { x: refSmooth.x + diffX, y: refSmooth.y + diffY };
+                    pTurnIndex = refP.turnIndex || 0;
+                } else {
+                    pos = getSmoothPlayerPosition(p, t);
+                    pTurnIndex = p.turnIndex || 0;
+                }
             }
             
-            ctx.moveTo(refPath[0].x + diffX, refPath[0].y + diffY);
-            const limit = Math.min(refPath.length - 1, refTurnIdx);
-            for (let i = 1; i <= limit; i++) {
-                ctx.lineTo(refPath[i].x + diffX, refPath[i].y + diffY);
+            if (pathData && pathData.length > 0) {
+                ctx.strokeStyle = p.color;
+                ctx.lineWidth = id === localId ? 6 : 4;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.globalAlpha = opacity;
+                ctx.beginPath();
+                
+                let diffX = 0, diffY = 0;
+                let refPath = pathData;
+                let refTurnIdx = pTurnIndex;
+                
+                if (id !== localId && refP && refPathData) {
+                    diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
+                    diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
+                    refPath = refPathData;
+                    refTurnIdx = refP.turnIndex || 0;
+                }
+                
+                ctx.moveTo(refPath[0].x + diffX, refPath[0].y + diffY);
+                const limit = Math.min(refPath.length - 1, refTurnIdx);
+                for (let i = 1; i <= limit; i++) {
+                    ctx.lineTo(refPath[i].x + diffX, refPath[i].y + diffY);
+                }
+                ctx.lineTo(pos.x, pos.y);
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
             }
-            ctx.lineTo(pos.x, pos.y);
-            ctx.stroke();
-            ctx.globalAlpha = 1.0;
-        }
-        
-        if (p.alive || opacity > 0) {
-            ctx.globalAlpha = dotOpacity;
-            ctx.fillStyle = p.alive ? p.color : '#ff5252';
-            ctx.shadowColor = p.color;
-            ctx.shadowBlur = id === localId ? (p.alive ? 25 : 0) : (p.alive ? 10 : 0);
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, id === localId ? 9 : 6, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            ctx.globalAlpha = 1.0;
             
-            // Draw player name above the circle
-            if (p.name) {
-                ctx.save();
+            if (p.alive || opacity > 0) {
                 ctx.globalAlpha = dotOpacity;
-                ctx.fillStyle = '#fff';
-                ctx.font = '700 12px Outfit';
-                ctx.textAlign = 'center';
-                ctx.shadowColor = '#000';
-                ctx.shadowBlur = 4;
-                ctx.fillText(p.name, pos.x, pos.y - 15);
-                ctx.restore();
+                ctx.fillStyle = p.alive ? p.color : '#ff5252';
+                ctx.shadowColor = p.color;
+                ctx.shadowBlur = id === localId ? (p.alive ? 25 : 0) : (p.alive ? 10 : 0);
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, id === localId ? 9 : 6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.globalAlpha = 1.0;
+                
+                // Draw player name above the circle
+                if (p.name) {
+                    ctx.save();
+                    ctx.globalAlpha = dotOpacity;
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '700 12px Outfit';
+                    ctx.textAlign = 'center';
+                    ctx.shadowColor = '#000';
+                    ctx.shadowBlur = 4;
+                    ctx.fillText(p.name, pos.x, pos.y - 15);
+                    ctx.restore();
+                }
+            } else {
+                ctx.fillStyle = '#ff5252';
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+                ctx.fill();
             }
-        } else {
-            ctx.fillStyle = '#ff5252';
-            ctx.globalAlpha = 0.5;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
-            ctx.fill();
         }
     }
     // Render judgment popups (in world space)
@@ -1603,7 +1874,14 @@ const diffBtns = document.querySelectorAll('.diff-btn');
 diffBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         if (gameState === 'idle') {
-            const diff = parseInt(btn.getAttribute('data-diff'));
+            const diffAttr = btn.getAttribute('data-diff');
+            if (diffAttr === 'custom') {
+                selectedDifficulty = 'custom';
+                updateDifficultyUI();
+                renderSongsList();
+                return;
+            }
+            const diff = parseInt(diffAttr);
             if (diff === 5 && !diff5Unlocked) {
                 alert("Clear this song on ★★★ with 100% to unlock the brutal ★★★★★ mode!");
                 return;
@@ -1632,14 +1910,16 @@ function updateDifficultyUI() {
     }
 
     diffBtns.forEach(btn => {
-        const diff = parseInt(btn.getAttribute('data-diff'));
+        const diffAttr = btn.getAttribute('data-diff');
+        const isActive = (diffAttr === 'custom' && selectedDifficulty === 'custom') ||
+                         (diffAttr !== 'custom' && parseInt(diffAttr) === selectedDifficulty);
         
-        if (diff === selectedDifficulty) {
+        if (isActive) {
             btn.classList.add('active');
-            btn.style.borderColor = (diff === 5) ? '#ff1744' : '#00e676';
-            btn.style.background = (diff === 5) ? 'rgba(255, 23, 68, 0.1)' : 'rgba(0, 230, 118, 0.1)';
-            btn.style.color = (diff === 5) ? '#ff1744' : '#00e676';
-        } else if (diff === 5 && !diff5Unlocked) {
+            btn.style.borderColor = (diffAttr === '5') ? '#ff1744' : '#00e676';
+            btn.style.background = (diffAttr === '5') ? 'rgba(255, 23, 68, 0.1)' : 'rgba(0, 230, 118, 0.1)';
+            btn.style.color = (diffAttr === '5') ? '#ff1744' : '#00e676';
+        } else if (diffAttr === '5' && !diff5Unlocked) {
             btn.classList.remove('active');
             btn.style.borderColor = 'rgba(255,255,255,0.1)';
             btn.style.background = 'rgba(255,255,255,0.05)';
@@ -1651,6 +1931,15 @@ function updateDifficultyUI() {
             btn.style.color = '#fff';
         }
     });
+
+    const startGameBtn = document.getElementById('start-game-btn');
+    if (startGameBtn) {
+        if (selectedDifficulty === 'custom') {
+            startGameBtn.style.display = 'none';
+        } else {
+            startGameBtn.style.display = selectedSongId ? 'block' : 'none';
+        }
+    }
 }
 
 // --- Latency Calibration & Ping Logic ---
@@ -1837,10 +2126,6 @@ autoCalibBtn.addEventListener('click', () => {
         // Calculate average difference (tapTime - tickTime)
         const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
         
-        // Delay compensation (calibrating early/late taps)
-        const offsetMs = Math.round(-avgDiff * 1000);
-        const clampedOffsetMs = Math.max(-250, Math.min(250, offsetMs));
-        
         calibrationOffset = clampedOffsetMs / 1000;
         calibrationSlider.value = clampedOffsetMs;
         calibrationVal.textContent = `${clampedOffsetMs > 0 ? '+' : ''}${clampedOffsetMs} ms`;
@@ -1851,4 +2136,407 @@ autoCalibBtn.addEventListener('click', () => {
         setTimeout(closeCalib, 2500);
     }, finishDelayMs);
     calibTickTimers.push(endTimer);
+});
+
+// --- Custom Maps / Editor Mode Implementation ---
+
+function selectCustomMap(map) {
+    const diff = 100 + map.id;
+    selectedDifficulty = diff;
+    
+    try {
+        const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
+        loadedTrackData = {
+            title: map.title,
+            bpm: selectedSongId ? (songList.find(s => s.id === selectedSongId)?.bpm || 120) : 120,
+            leadIn: selectedSongId ? (songList.find(s => s.id === selectedSongId)?.leadIn || 2.5) : 2.5,
+            segments: segments
+        };
+        totalDuration = segments[segments.length - 1].time;
+    } catch (e) {
+        console.error("Failed to parse custom segments:", e);
+    }
+    
+    if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'selectDifficulty', difficulty: diff }));
+    }
+    
+    updateDifficultyUI();
+    renderSongsList();
+}
+
+function enterEditorMode(songId) {
+    unlockAudio();
+    isEditorMode = true;
+    editorSongId = songId;
+    
+    editorSegments = [{ time: 0.0, dir: 0 }];
+    editorTracks = precalculatePathPoints(editorSegments, 0);
+    editorPath2D = new Path2D();
+    editorCurrentTime = 0.0;
+    editorIsPlaying = false;
+    editorZoomScale = 1.0;
+    draggedTurnIndex = null;
+    lastCheckedEditorTime = 0.0;
+    
+    document.getElementById('editor-controls').style.display = 'flex';
+    songSelection.style.display = 'none';
+    resultsOverlay.style.display = 'none';
+    
+    const song = songList.find(s => s.id === songId);
+    editorBPM = song ? (song.bpm || 120) : 120;
+    
+    document.getElementById('editor-title-input').value = "";
+    document.getElementById('editor-creator-input').value = localStorage.getItem('beat_maze_username') || "Creator";
+    
+    const editorTimeline = document.getElementById('editor-timeline');
+    if (loadedAudioBuffer) {
+        editorTimeline.max = loadedAudioBuffer.duration;
+        document.getElementById('editor-time-total').textContent = formatTime(loadedAudioBuffer.duration);
+    } else {
+        editorTimeline.max = 100;
+        document.getElementById('editor-time-total').textContent = "0:00";
+    }
+    editorTimeline.value = 0;
+    document.getElementById('editor-time-current').textContent = "0:00";
+    document.getElementById('editor-play-btn').textContent = "▶️";
+    
+    sortAndRebuildDirections();
+    
+    gameState = 'playing';
+    if (drawReqId) cancelAnimationFrame(drawReqId);
+    drawReqId = requestAnimationFrame(gameLoop);
+}
+
+function editorExit() {
+    editorPause();
+    isEditorMode = false;
+    document.getElementById('editor-controls').style.display = 'none';
+    
+    gameState = 'idle';
+    if (drawReqId) cancelAnimationFrame(drawReqId);
+    drawReqId = null;
+    
+    songSelection.style.display = 'flex';
+    renderSongsList();
+}
+
+function editorPlay() {
+    if (editorIsPlaying || !loadedAudioBuffer) return;
+    if (editorCurrentTime >= loadedAudioBuffer.duration) {
+        editorCurrentTime = 0;
+    }
+    
+    editorAudioSource = audioContext.createBufferSource();
+    editorAudioSource.buffer = loadedAudioBuffer;
+    
+    musicGainNode = audioContext.createGain();
+    musicGainNode.gain.setValueAtTime(musicVolumeBoost || 1.0, audioContext.currentTime);
+    editorAudioSource.connect(musicGainNode);
+    musicGainNode.connect(audioContext.destination);
+    
+    editorAudioSource.start(0, editorCurrentTime);
+    editorAudioStartTime = audioContext.currentTime - editorCurrentTime;
+    editorIsPlaying = true;
+    
+    document.getElementById('editor-play-btn').textContent = "⏸️";
+}
+
+function editorPause() {
+    if (!editorIsPlaying) return;
+    editorCurrentTime = audioContext.currentTime - editorAudioStartTime;
+    try {
+        editorAudioSource.stop();
+    } catch(e) {}
+    editorIsPlaying = false;
+    
+    document.getElementById('editor-play-btn').textContent = "▶️";
+}
+
+function editorSeek(targetTime) {
+    editorCurrentTime = Math.max(0, Math.min(loadedAudioBuffer ? loadedAudioBuffer.duration : 100, targetTime));
+    
+    const editorTimeline = document.getElementById('editor-timeline');
+    if (editorTimeline) editorTimeline.value = editorCurrentTime;
+    const timeCurrent = document.getElementById('editor-time-current');
+    if (timeCurrent) timeCurrent.textContent = formatTime(editorCurrentTime);
+    
+    if (editorIsPlaying) {
+        try {
+            editorAudioSource.stop();
+        } catch(e) {}
+        editorAudioSource = audioContext.createBufferSource();
+        editorAudioSource.buffer = loadedAudioBuffer;
+        
+        musicGainNode = audioContext.createGain();
+        musicGainNode.gain.setValueAtTime(musicVolumeBoost || 1.0, audioContext.currentTime);
+        editorAudioSource.connect(musicGainNode);
+        musicGainNode.connect(audioContext.destination);
+        
+        editorAudioSource.start(0, editorCurrentTime);
+        editorAudioStartTime = audioContext.currentTime - editorCurrentTime;
+    }
+}
+
+function formatTime(sec) {
+    if (isNaN(sec) || sec === Infinity) return "0:00";
+    const mins = Math.floor(sec / 60);
+    const secs = Math.floor(sec % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+}
+
+function sortAndRebuildDirections() {
+    editorSegments.sort((a, b) => a.time - b.time);
+    
+    let currentDir = 0;
+    editorSegments[0].dir = 0;
+    for (let i = 1; i < editorSegments.length; i++) {
+        currentDir = 1 - currentDir;
+        editorSegments[i].dir = currentDir;
+    }
+    
+    editorTracks = precalculatePathPoints(editorSegments, 0);
+    
+    editorPath2D = new Path2D();
+    for (let i = 0; i < editorTracks.length; i++) {
+        if (i === 0) editorPath2D.moveTo(editorTracks[i].x, editorTracks[i].y);
+        else editorPath2D.lineTo(editorTracks[i].x, editorTracks[i].y);
+    }
+}
+
+function getEditorPositionAtTime(time) {
+    if (editorTracks.length === 0) return { x: 0, y: 0, dir: 0 };
+    
+    let idx = 0;
+    for (let i = 0; i < editorTracks.length; i++) {
+        if (editorTracks[i].time <= time) {
+            idx = i;
+        } else {
+            break;
+        }
+    }
+    
+    const p0 = editorTracks[idx];
+    const p1 = editorTracks[idx + 1];
+    
+    if (!p1) {
+        const elapsed = time - p0.time;
+        const dist = elapsed * SPEED_PER_SEC;
+        const dv = DIR_VECS[p0.dir];
+        return {
+            x: p0.x + dv.x * dist,
+            y: p0.y + dv.y * dist,
+            dir: p0.dir
+        };
+    }
+    
+    const elapsed = time - p0.time;
+    const dist = elapsed * SPEED_PER_SEC;
+    const dv = DIR_VECS[p0.dir];
+    return {
+        x: p0.x + dv.x * dist,
+        y: p0.y + dv.y * dist,
+        dir: p0.dir
+    };
+}
+
+function handleEditorCanvasPointerDown(e) {
+    if (!isEditorMode) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    
+    const editorPos = getEditorPositionAtTime(editorCurrentTime);
+    const camX = editorPos.x;
+    const camY = editorPos.y;
+    
+    const worldX = (clickX - canvas.width / 2) / editorZoomScale + camX;
+    const worldY = (clickY - canvas.height / 2) / editorZoomScale + camY;
+    
+    const margin = 20 / editorZoomScale;
+    for (let i = 1; i < editorSegments.length; i++) {
+        const seg = editorSegments[i];
+        const tp = editorTracks[i];
+        if (tp) {
+            const dist = Math.hypot(worldX - tp.x, worldY - tp.y);
+            if (dist < Math.max(15, margin)) {
+                if (!editorIsPlaying) {
+                    draggedTurnIndex = i;
+                    initialTurnTime = seg.time;
+                    initialMouseX = e.clientX;
+                    initialMouseY = e.clientY;
+                    hasDragged = false;
+                }
+                return;
+            }
+        }
+    }
+    
+    if (!editorIsPlaying) {
+        for (let i = 0; i < editorTracks.length - 1; i++) {
+            const p0 = editorTracks[i];
+            const p1 = editorTracks[i + 1];
+            const dist = pointToSegmentDist(worldX, worldY, p0.x, p0.y, p1.x, p1.y);
+            if (dist < WALL_HALF_WIDTH + 5) {
+                const dx = p1.x - p0.x;
+                const dy = p1.y - p0.y;
+                const len2 = dx * dx + dy * dy;
+                if (len2 > 0) {
+                    let projT = ((worldX - p0.x) * dx + (worldY - p0.y) * dy) / len2;
+                    projT = Math.max(0, Math.min(1, projT));
+                    const clickTime = p0.time + projT * (p1.time - p0.time);
+                    
+                    const beatDuration = 60.0 / editorBPM;
+                    const stepSize = beatDuration / 4;
+                    const firstTime = editorSegments[1] ? editorSegments[1].time : clickTime;
+                    const snappedTime = firstTime + Math.round((clickTime - firstTime) / stepSize) * stepSize;
+                    
+                    if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.02)) {
+                        editorSegments.push({ time: snappedTime, dir: 0 });
+                        sortAndRebuildDirections();
+                    }
+                }
+                return;
+            }
+        }
+    }
+}
+
+function handleEditorCanvasPointerMove(e) {
+    if (!isEditorMode || draggedTurnIndex === null) return;
+    
+    const mouseDeltaX = e.clientX - initialMouseX;
+    if (Math.abs(mouseDeltaX) > 3) {
+        hasDragged = true;
+    }
+    
+    const newTime = Math.max(0.05, initialTurnTime + mouseDeltaX * 0.01);
+    
+    const prevTime = editorSegments[draggedTurnIndex - 1] ? editorSegments[draggedTurnIndex - 1].time : 0;
+    const nextTime = editorSegments[draggedTurnIndex + 1] ? editorSegments[draggedTurnIndex + 1].time : Infinity;
+    
+    editorSegments[draggedTurnIndex].time = Math.max(prevTime + 0.05, Math.min(nextTime - 0.05, newTime));
+    sortAndRebuildDirections();
+}
+
+function handleEditorCanvasPointerUp(e) {
+    if (!isEditorMode) return;
+    
+    if (draggedTurnIndex !== null) {
+        if (!hasDragged) {
+            editorSegments.splice(draggedTurnIndex, 1);
+            sortAndRebuildDirections();
+        }
+        draggedTurnIndex = null;
+    }
+}
+
+// Canvas scroll wheel zoom
+canvas.addEventListener('wheel', (e) => {
+    if (isEditorMode) {
+        e.preventDefault();
+        const zoomSpeed = 0.05;
+        editorZoomScale = Math.max(0.2, Math.min(3.0, editorZoomScale - Math.sign(e.deltaY) * zoomSpeed));
+    }
+}, { passive: false });
+
+// Touch pinch to zoom gesture controls
+let touchStartDist = 0;
+let initialZoomScale = 1.0;
+
+canvas.addEventListener('touchstart', (e) => {
+    if (isEditorMode && e.touches.length === 2) {
+        touchStartDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+        );
+        initialZoomScale = editorZoomScale;
+    }
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    if (isEditorMode && e.touches.length === 2 && touchStartDist > 0) {
+        e.preventDefault();
+        const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+        );
+        const ratio = dist / touchStartDist;
+        editorZoomScale = Math.max(0.2, Math.min(3.0, initialZoomScale * ratio));
+    }
+});
+
+canvas.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) {
+        touchStartDist = 0;
+    }
+});
+
+// Canvas pointer down/move/up for clicks/dragging diamonds
+canvas.addEventListener('pointerdown', handleEditorCanvasPointerDown);
+canvas.addEventListener('pointermove', handleEditorCanvasPointerMove);
+canvas.addEventListener('pointerup', handleEditorCanvasPointerUp);
+
+// Bottom panel button bindings
+document.getElementById('editor-play-btn').addEventListener('click', () => {
+    if (editorIsPlaying) {
+        editorPause();
+    } else {
+        editorPlay();
+    }
+});
+
+document.getElementById('editor-prev-btn').addEventListener('click', () => {
+    editorSeek(editorCurrentTime - 5.0);
+});
+
+document.getElementById('editor-next-btn').addEventListener('click', () => {
+    editorSeek(editorCurrentTime + 5.0);
+});
+
+document.getElementById('editor-timeline').addEventListener('input', (e) => {
+    editorSeek(parseFloat(e.target.value));
+});
+
+document.getElementById('editor-save-btn').addEventListener('click', () => {
+    const title = document.getElementById('editor-title-input').value.trim();
+    const creator = document.getElementById('editor-creator-input').value.trim();
+    if (!title || !creator) {
+        alert("Please enter both Map Title and Creator Name!");
+        return;
+    }
+    if (editorSegments.length <= 1) {
+        alert("Please place at least one turn note to save!");
+        return;
+    }
+    
+    fetch('./api/custom-maps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            song_id: editorSongId,
+            creator_name: creator,
+            title: title,
+            segments: editorSegments
+        })
+    })
+    .then(res => res.json())
+    .then(result => {
+        if (result.success) {
+            alert("Custom map saved successfully!");
+            editorExit();
+        } else {
+            alert("Failed to save map: " + (result.error || "unknown error"));
+        }
+    })
+    .catch(err => {
+        alert("Failed to save map: " + err.message);
+    });
+});
+
+document.getElementById('editor-exit-btn').addEventListener('click', () => {
+    if (confirm("Are you sure you want to exit without saving?")) {
+        editorExit();
+    }
 });

@@ -28,22 +28,38 @@ const db = new sqlite3.Database(dbPath);
 
 // Create table and migrate if needed
 db.serialize(() => {
-    db.run(`
-        CREATE TABLE IF NOT EXISTS leaderboard (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            song_id TEXT NOT NULL,
-            difficulty INTEGER NOT NULL,
-            player_name TEXT NOT NULL,
-            percent REAL NOT NULL,
-            score INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            UNIQUE(song_id, difficulty, player_name)
-        )
-    `, (err) => {
-        if (err) {
-            console.error("Failed to create leaderboard table:", err);
-            return;
-        }
+        db.run(`
+            CREATE TABLE IF NOT EXISTS leaderboard (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                song_id TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                player_name TEXT NOT NULL,
+                percent REAL NOT NULL,
+                score INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                UNIQUE(song_id, difficulty, player_name)
+            )
+        `, (err) => {
+            if (err) {
+                console.error("Failed to create leaderboard table:", err);
+                return;
+            }
+        });
+
+        db.run(`
+            CREATE TABLE IF NOT EXISTS custom_maps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                song_id TEXT NOT NULL,
+                creator_name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                segments TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        `, (err) => {
+            if (err) {
+                console.error("Failed to create custom_maps table:", err);
+            }
+        });
         
         db.run(`ALTER TABLE leaderboard ADD COLUMN max_combo INTEGER DEFAULT 0`, (err) => {
             // Ignore error if column already exists
@@ -132,7 +148,6 @@ db.serialize(() => {
                 db.run("ROLLBACK");
             }
         }
-    });
 });
 
 function broadcastLeaderboard(songId, difficulty, wsOnly = null) {
@@ -270,6 +285,36 @@ function getSongsList() {
 
 app.get('/api/songs', (req, res) => {
     res.json(getSongsList());
+});
+
+app.get('/api/custom-maps', (req, res) => {
+    const songId = req.query.song_id;
+    if (!songId) return res.status(400).json({ error: "song_id is required" });
+    db.all(
+        `SELECT id, song_id, creator_name, title, segments, created_at FROM custom_maps WHERE song_id = ? ORDER BY id DESC`,
+        [songId],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows || []);
+        }
+    );
+});
+
+app.post('/api/custom-maps', (req, res) => {
+    const { song_id, creator_name, title, segments } = req.body;
+    if (!song_id || !creator_name || !title || !segments) {
+        return res.status(400).json({ error: "song_id, creator_name, title, and segments are required." });
+    }
+    const createdAt = new Date().toISOString();
+    const segmentsStr = typeof segments === 'string' ? segments : JSON.stringify(segments);
+    db.run(
+        `INSERT INTO custom_maps (song_id, creator_name, title, segments, created_at) VALUES (?, ?, ?, ?, ?)`,
+        [song_id, creator_name, title, segmentsStr, createdAt],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true, id: this.lastID });
+        }
+    );
 });
 
 // Endpoint to register online sound source via ffmpeg-video and yt-dlp
@@ -467,6 +512,7 @@ let selectedSong = null;
 let gameStartTime = 0;
 let gameInterval = null;
 let trackSegments = [];
+let customTrackSegments = null;
 let trackTurnPoints = {}; // playerId -> array of points
 let sharedCombo = 0;
 let gameState = 'idle'; // idle | starting | playing
@@ -610,9 +656,14 @@ wss.on('connection', (ws) => {
                 if (gameState === 'idle') {
                     const diff = parseInt(data.difficulty) || 3;
                     
-                    const finishDifficultySelect = () => {
+                    const finishDifficultySelect = (customSegments) => {
                         selectedDifficulty = diff;
                         SPEED_PER_SEC = selectedDifficulty === 5 ? 360 : 160;
+                        if (customSegments) {
+                            customTrackSegments = customSegments;
+                        } else {
+                            customTrackSegments = null;
+                        }
                         broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
                         
                         if (selectedSong) {
@@ -620,7 +671,22 @@ wss.on('connection', (ws) => {
                         }
                     };
 
-                    if (diff === 5) {
+                    if (diff >= 100) {
+                        const customMapId = diff - 100;
+                        db.get(`SELECT segments FROM custom_maps WHERE id = ?`, [customMapId], (err, row) => {
+                            if (row) {
+                                try {
+                                    const customSegments = JSON.parse(row.segments);
+                                    finishDifficultySelect(customSegments);
+                                } catch (e) {
+                                    console.error("Failed to parse custom map segments:", e);
+                                    finishDifficultySelect(null);
+                                }
+                            } else {
+                                finishDifficultySelect(null);
+                            }
+                        });
+                    } else if (diff === 5) {
                         const p = players[id];
                         if (!p || !selectedSong) return;
                         isDiff5Unlocked(selectedSong.id, p.name, (unlocked) => {
@@ -647,7 +713,12 @@ wss.on('connection', (ws) => {
                         p.spectator = true;
                         p.alive = false;
                         p.finished = false;
-                        const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                        let filteredSegments;
+                        if (selectedDifficulty >= 100 && customTrackSegments) {
+                            filteredSegments = customTrackSegments;
+                        } else {
+                            filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                        }
                         trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
                         const currentT = (Date.now() - gameStartTime) / 1000;
                         ws.send(JSON.stringify({
@@ -672,8 +743,13 @@ wss.on('connection', (ws) => {
                 
                 broadcast({ type: 'gameStateChange', gameState });
                 
-                // Filter track segments based on selected difficulty
-                const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                // Filter track segments based on selected difficulty or custom segments
+                let filteredSegments;
+                if (selectedDifficulty >= 100 && customTrackSegments) {
+                    filteredSegments = customTrackSegments;
+                } else {
+                    filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                }
                 
                 // Reset and precalculate paths for active players
                 trackTurnPoints = {};
