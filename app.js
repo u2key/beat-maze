@@ -112,6 +112,7 @@ let editorIsPlaying = false;
 let editorAudioSource = null;
 let editorAudioStartTime = 0;
 let editorZoomScale = 1.0;
+let editorBPM = 120;
 let draggedTurnIndex = null;
 let initialTurnTime = 0.0;
 let initialMouseX = 0;
@@ -239,12 +240,11 @@ function initWebSocket() {
                     selectedSongId = data.selectedSong;
                     gameState = data.gameState || 'idle';
                     selectedDifficulty = data.selectedDifficulty || 3;
+                    // Fetch songs first so lobby list still loads even if UI helpers throw
+                    fetchSongsList();
                     updatePlayersList();
                     updateStartButtonText();
                     updateDifficultyUI();
-                    
-                    // Retrieve list of songs from server
-                    fetchSongsList();
                     break;
                     
                 case 'playerJoined':
@@ -490,7 +490,11 @@ usernameInput.addEventListener('keydown', (e) => {
 async function fetchSongsList() {
     try {
         const res = await fetch('./api/songs');
-        songList = await res.json();
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        songList = Array.isArray(data) ? data : [];
         renderSongsList();
         
         // Auto-download currently selected song if set
@@ -697,7 +701,12 @@ function renderSongsList() {
 function renderLeaderboard() {
     const leaderboardTitle = document.querySelector('#leaderboard-panel h3');
     if (leaderboardTitle) {
-        const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : (selectedDifficulty === 3 ? '★★★' : '★★★★★'));
+        let diffStars = '★★★';
+        if (selectedDifficulty === 1) diffStars = '★';
+        else if (selectedDifficulty === 2) diffStars = '★★';
+        else if (selectedDifficulty === 3) diffStars = '★★★';
+        else if (selectedDifficulty === 5) diffStars = '★★★★★';
+        else if (selectedDifficulty === 'custom' || selectedDifficulty >= 100) diffStars = 'Custom';
         leaderboardTitle.textContent = `Leaderboard (${diffStars})`;
     }
     
@@ -1961,6 +1970,7 @@ function updateDifficultyUI() {
     }
 
     diffBtns.forEach(btn => {
+        const diffAttr = btn.getAttribute('data-diff');
         const isCustom = (selectedDifficulty === 'custom' || selectedDifficulty >= 100);
         const isActive = (diffAttr === 'custom' && isCustom) ||
                          (diffAttr !== 'custom' && parseInt(diffAttr) === selectedDifficulty);
