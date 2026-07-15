@@ -805,7 +805,12 @@ wss.on('connection', (ws) => {
                     p.alive = false;
                     p.finished = false;
                     
-                    const filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                    let filteredSegments;
+                    if (selectedDifficulty >= 100 && customTrackSegments) {
+                        filteredSegments = customTrackSegments;
+                    } else {
+                        filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                    }
                     trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
                     
                     const currentT = (Date.now() - gameStartTime) / 1000;

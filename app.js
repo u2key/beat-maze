@@ -747,6 +747,23 @@ async function downloadSongData(songId) {
         downloadStatus.textContent = `Downloading notes...`;
         const jsonRes = await fetch(song.json);
         loadedTrackData = await jsonRes.json();
+        
+        if (selectedDifficulty >= 100) {
+            try {
+                const mapsRes = await fetch(`./api/custom-maps?song_id=${songId}`);
+                const maps = await mapsRes.json();
+                const customMapId = selectedDifficulty - 100;
+                const map = maps.find(m => m.id === customMapId);
+                if (map) {
+                    const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
+                    loadedTrackData.title = map.title;
+                    loadedTrackData.segments = segments;
+                }
+            } catch (err) {
+                console.error("Failed to load custom map segments during download:", err);
+            }
+        }
+        
         totalDuration = loadedTrackData.segments[loadedTrackData.segments.length - 1].time;
         
         downloadStatus.textContent = `Downloading audio...`;
