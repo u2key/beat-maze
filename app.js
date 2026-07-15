@@ -613,6 +613,39 @@ function renderSongsList() {
                                 </div>
                             `;
                             
+                            const deleteMapBtn = document.createElement('button');
+                            deleteMapBtn.innerHTML = '🗑️';
+                            deleteMapBtn.style.background = 'none';
+                            deleteMapBtn.style.border = 'none';
+                            deleteMapBtn.style.color = '#ff5252';
+                            deleteMapBtn.style.cursor = 'pointer';
+                            deleteMapBtn.style.fontSize = '1.0rem';
+                            deleteMapBtn.style.padding = '2px 6px';
+                            deleteMapBtn.style.transition = 'transform 0.2s';
+                            
+                            deleteMapBtn.addEventListener('mouseenter', () => deleteMapBtn.style.transform = 'scale(1.2)');
+                            deleteMapBtn.addEventListener('mouseleave', () => deleteMapBtn.style.transform = 'scale(1.0)');
+                            
+                            deleteMapBtn.addEventListener('click', async (e) => {
+                                e.stopPropagation();
+                                if (confirm(`Are you sure you want to delete custom map "${map.title}"?`)) {
+                                    try {
+                                        const res = await fetch(`./api/custom-maps/${map.id}`, { method: 'DELETE' });
+                                        const result = await res.json();
+                                        if (result.success) {
+                                            renderSongsList();
+                                        } else {
+                                            alert(result.error || "Failed to delete custom map.");
+                                        }
+                                    } catch (err) {
+                                        console.error(err);
+                                        alert("Failed to delete custom map.");
+                                    }
+                                }
+                            });
+                            
+                            mapItem.appendChild(deleteMapBtn);
+                            
                             mapItem.addEventListener('click', (e) => {
                                 e.stopPropagation();
                                 selectCustomMap(map);

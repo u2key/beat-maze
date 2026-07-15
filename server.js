@@ -317,6 +317,18 @@ app.post('/api/custom-maps', (req, res) => {
     );
 });
 
+app.delete('/api/custom-maps/:id', (req, res) => {
+    const id = req.params.id;
+    db.run(
+        `DELETE FROM custom_maps WHERE id = ?`,
+        [id],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true });
+        }
+    );
+});
+
 // Endpoint to register online sound source via ffmpeg-video and yt-dlp
 app.post('/api/songs/register-online', (req, res) => {
     const { url, name } = req.body;
