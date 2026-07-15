@@ -101,6 +101,7 @@ let gameStartTime = 0;
 let zoomStartTime = 0;
 let drawReqId;
 let localPredictionActive = false;
+let notesHitCount = 0;
 
 // Judgment Popups System
 let judgmentPopups = [];
@@ -303,66 +304,48 @@ function initWebSocket() {
                     break;
                 }
                     
-                case 'playerUpdate': {
-                    if (gameState === 'idle') break;
+                case 'playerUpdate':
+                    // Real-time position updates removed for optimization
+                    break;
                     
+                case 'statusUpdate': {
                     const serverPlayers = data.players;
-                    const serverT = data.t;
-                    
                     for (const pid in serverPlayers) {
+                        if (pid === localId) continue;
                         if (!players[pid]) players[pid] = {};
                         
-                        if (pid === localId && localPredictionActive) {
-                            // Protect locally predicted state until server catches up
-                            const serverData = serverPlayers[pid];
-                            const serverTI = serverData.turnIndex ?? 0;
-                            const localTI = players[pid].turnIndex ?? 0;
-                            
-                            if (serverTI >= localTI) {
-                                // Server confirmed prediction - accept full state
-                                Object.assign(players[pid], serverData);
-                                localPredictionActive = false;
-                            } else {
-                                // Server hasn't processed tap yet - only update authoritative fields
-                                players[pid].alive = serverData.alive;
-                                players[pid].score = serverData.score;
-                                players[pid].combo = serverData.combo;
-                                players[pid].finished = serverData.finished;
-                            }
-                        } else {
-                            Object.assign(players[pid], serverPlayers[pid]);
+                        if (players[pid].alive && !serverPlayers[pid].alive) {
+                            players[pid].deathTime = Date.now();
                         }
-                    }
-                    
-                    const localP = serverPlayers[localId];
-                    if (localP) {
-                        alive = localP.alive;
-                        score = localP.score;
-                        combo = localP.combo;
-                        if (combo > maxCombo) {
-                            maxCombo = combo;
-                        }
-                        updateHUD(serverT);
                         
-                        if (localP.finished && !finished) {
-                            triggerClear();
-                        }
+                        Object.assign(players[pid], serverPlayers[pid]);
                     }
                     break;
                 }
+
+                case 'playerFinished':
+                    if (players[data.id]) {
+                        players[data.id].finished = true;
+                    }
+                    if (data.id === localId && !finished) {
+                        triggerClear();
+                    }
+                    break;
                     
                 case 'playerDead':
-                    if (players[data.id]) players[data.id].alive = false;
+                    if (players[data.id]) {
+                        players[data.id].alive = false;
+                        players[data.id].deathTime = Date.now();
+                    }
                     if (data.id === localId) {
                         triggerDeath();
                     }
                     break;
                     
-                case 'hit':
+                case 'hit': {
+                    const judgment = data.judgment;
                     if (data.id === localId) {
-                        const judgment = data.judgment;
                         if (judgment === 'MISS') {
-                            // Server rejected tap - clear prediction so next playerUpdate corrects state
                             localPredictionActive = false;
                             showJudgmentPopup('MISS', getJudgmentColor('MISS'), data.x, data.y);
                             judgmentCounts.MISS++;
@@ -373,11 +356,51 @@ function initWebSocket() {
                             else if (judgment === 'Good') judgmentCounts.Good++;
                             else if (judgment === 'Fast') judgmentCounts.Fast++;
                             else if (judgment === 'Late') judgmentCounts.Late++;
+                            
+                            // Update local player values
+                            score = data.score;
+                            combo = data.combo;
+                            if (combo > maxCombo) maxCombo = combo;
+                            
+                            const localP = players[localId];
+                            if (localP) {
+                                localP.score = data.score;
+                                localP.combo = data.combo;
+                                localP.turnIndex = data.turnIndex;
+                                const pts = precalculatedTracks[localId];
+                                if (pts && pts[data.turnIndex]) {
+                                    const tp = pts[data.turnIndex];
+                                    localP.x = tp.x;
+                                    localP.y = tp.y;
+                                    localP.anchor = { x: tp.x, y: tp.y, time: tp.time };
+                                    localP.currentDir = tp.dir;
+                                }
+                            }
+                            
+                            // Send statusReport every 5 notes
+                            notesHitCount++;
+                            if (notesHitCount % 5 === 0 && ws && ws.readyState === 1) {
+                                ws.send(JSON.stringify({
+                                    type: 'statusReport',
+                                    alive: alive,
+                                    score: score,
+                                    combo: combo
+                                }));
+                            }
                         }
                     } else {
-                        if (data.judgment !== 'MISS' && data.judgment !== 'Fast' && data.judgment !== 'Late') playEcho();
+                        // Other player hit
+                        if (players[data.id]) {
+                            players[data.id].score = data.score;
+                            players[data.id].combo = data.combo;
+                            players[data.id].turnIndex = data.turnIndex;
+                        }
+                        if (judgment !== 'MISS' && judgment !== 'Fast' && judgment !== 'Late') {
+                            playEcho();
+                        }
                     }
                     break;
+                }
             }
         } catch (e) {
             console.error("WS Message Error:", e);
@@ -912,6 +935,7 @@ function handleStartGame(startDelayMs, serverSegments) {
     finished = false;
     judgmentCounts = { excellent: 0, Good: 0, Fast: 0, Late: 0, MISS: 0 };
     updateHUD(0);
+    notesHitCount = 0;
     
     // Precalculate paths
     precalculatedTracks = {};
@@ -1315,6 +1339,9 @@ function gameLoop() {
         }
     }
     
+    if (gameState === 'playing') {
+        updateHUD(t);
+    }
     render(t, localPos.x, localPos.y);
 }
 
@@ -1406,42 +1433,102 @@ function render(t, camX, camY) {
     }
     
     // 3. Draw trails and player dots
+    const localP = players[localId];
+    const localPathData = precalculatedTracks[localId];
+    let refP = (localP && !localP.spectator) ? localP : null;
+    if (!refP) {
+        for (const id in players) {
+            const p = players[id];
+            if (p.alive && !p.spectator) {
+                refP = p;
+                break;
+            }
+        }
+    }
+    const refPathData = refP ? precalculatedTracks[refP.id] : null;
+
     for (const id in players) {
         const p = players[id];
         const pathData = precalculatedTracks[id];
         if (!pathData) continue;
         
-        const pos = getSmoothPlayerPosition(p, t);
+        let pos;
+        let pTurnIndex = p.turnIndex || 0;
+        let opacity = id === localId ? 0.9 : 0.5;
+        let dotOpacity = 1.0;
+        
+        if (!p.alive) {
+            const elapsed = Date.now() - (p.deathTime || Date.now());
+            const fadeDuration = 500; // 500ms fadeout
+            if (elapsed > fadeDuration) {
+                continue; // Do not draw this player at all
+            }
+            const ratio = 1 - (elapsed / fadeDuration);
+            opacity = ratio * (id === localId ? 0.9 : 0.5);
+            dotOpacity = ratio;
+        }
+
+        if (id === localId) {
+            pos = getSmoothPlayerPosition(p, t);
+            pTurnIndex = p.turnIndex || 0;
+        } else {
+            // Replicate reference player's position and trail, offset by spawn index difference
+            if (refP && refPathData) {
+                const diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
+                const diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
+                const refSmooth = getSmoothPlayerPosition(refP, t);
+                pos = { x: refSmooth.x + diffX, y: refSmooth.y + diffY };
+                pTurnIndex = refP.turnIndex || 0;
+            } else {
+                pos = getSmoothPlayerPosition(p, t);
+                pTurnIndex = p.turnIndex || 0;
+            }
+        }
         
         if (pathData && pathData.length > 0) {
             ctx.strokeStyle = p.color;
             ctx.lineWidth = id === localId ? 6 : 4;
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
-            ctx.globalAlpha = id === localId ? 0.9 : 0.5;
+            ctx.globalAlpha = opacity;
             ctx.beginPath();
-            ctx.moveTo(pathData[0].x, pathData[0].y);
-            const limit = Math.min(pathData.length - 1, p.turnIndex || 0);
+            
+            let diffX = 0, diffY = 0;
+            let refPath = pathData;
+            let refTurnIdx = pTurnIndex;
+            
+            if (id !== localId && refP && refPathData) {
+                diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
+                diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
+                refPath = refPathData;
+                refTurnIdx = refP.turnIndex || 0;
+            }
+            
+            ctx.moveTo(refPath[0].x + diffX, refPath[0].y + diffY);
+            const limit = Math.min(refPath.length - 1, refTurnIdx);
             for (let i = 1; i <= limit; i++) {
-                ctx.lineTo(pathData[i].x, pathData[i].y);
+                ctx.lineTo(refPath[i].x + diffX, refPath[i].y + diffY);
             }
             ctx.lineTo(pos.x, pos.y);
             ctx.stroke();
             ctx.globalAlpha = 1.0;
         }
         
-        if (p.alive) {
-            ctx.fillStyle = p.color;
+        if (p.alive || opacity > 0) {
+            ctx.globalAlpha = dotOpacity;
+            ctx.fillStyle = p.alive ? p.color : '#ff5252';
             ctx.shadowColor = p.color;
-            ctx.shadowBlur = id === localId ? 25 : 10;
+            ctx.shadowBlur = id === localId ? (p.alive ? 25 : 0) : (p.alive ? 10 : 0);
             ctx.beginPath();
             ctx.arc(pos.x, pos.y, id === localId ? 9 : 6, 0, Math.PI * 2);
             ctx.fill();
             ctx.shadowBlur = 0;
+            ctx.globalAlpha = 1.0;
             
             // Draw player name above the circle
             if (p.name) {
                 ctx.save();
+                ctx.globalAlpha = dotOpacity;
                 ctx.fillStyle = '#fff';
                 ctx.font = '700 12px Outfit';
                 ctx.textAlign = 'center';

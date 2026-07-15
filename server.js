@@ -837,6 +837,34 @@ wss.on('connection', (ws) => {
                 }
                 break;
             }
+            case 'statusReport': {
+                const p = players[id];
+                if (!p) return;
+                p.alive = data.alive !== undefined ? data.alive : p.alive;
+                p.score = data.score !== undefined ? data.score : p.score;
+                p.combo = data.combo !== undefined ? data.combo : p.combo;
+                p.maxCombo = Math.max(p.maxCombo || 0, p.combo);
+                
+                broadcast({
+                    type: 'statusUpdate',
+                    players: Object.keys(players).reduce((acc, pid) => {
+                        const pl = players[pid];
+                        acc[pid] = {
+                            id: pl.id,
+                            name: pl.name,
+                            alive: pl.alive,
+                            score: pl.score,
+                            combo: pl.combo,
+                            maxCombo: pl.maxCombo,
+                            finished: pl.finished,
+                            spawnIndex: pl.spawnIndex,
+                            color: pl.color
+                        };
+                        return acc;
+                    }, {})
+                });
+                break;
+            }
         }
     });
 
@@ -850,6 +878,9 @@ wss.on('connection', (ws) => {
             clearInterval(gameInterval);
             gameInterval = null;
             gameState = 'idle';
+            if (gameEndTimeout) clearTimeout(gameEndTimeout);
+            gameEndTimeout = null;
+            
             for (const pid in players) {
                 players[pid].spectator = false;
                 players[pid].alive = true;
@@ -924,6 +955,7 @@ function updatePhysics() {
                         if (!p.finished) {
                             p.finished = true;
                             recordScore(selectedSong.id, selectedDifficulty, p.name, 100, p.score, p.maxCombo);
+                            broadcast({ type: 'playerFinished', id });
                         }
                     } else {
                         allFinished = false;
@@ -934,29 +966,6 @@ function updatePhysics() {
             }
         }
     }
-    
-    // Broadcast positions
-    broadcast({
-        type: 'playerUpdate',
-        t,
-        players: Object.keys(players).reduce((acc, id) => {
-            const p = players[id];
-            acc[id] = {
-                id: p.id,
-                name: p.name,
-                x: p.x,
-                y: p.y,
-                alive: p.alive,
-                score: p.score,
-                combo: p.combo,
-                turnIndex: p.turnIndex,
-                currentDir: p.currentDir,
-                finished: p.finished,
-                anchor: p.anchor
-            };
-            return acc;
-        }, {})
-    });
     
     if ((allFinished || !anyAlive) && t > 1.0) {
         if (!gameEndTimeout) {
