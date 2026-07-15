@@ -572,7 +572,6 @@ function renderSongsList() {
         row.appendChild(deleteBtn);
         div.appendChild(row);
         
-        const isCustom = (selectedDifficulty === 'custom' || selectedDifficulty >= 100);
         if (isSelected && isCustom) {
             const customContainer = document.createElement('div');
             customContainer.className = 'custom-maps-list';
