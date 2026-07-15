@@ -514,7 +514,8 @@ function renderSongsList() {
         const div = document.createElement('div');
         div.className = `song-item ${isSelected ? 'selected' : ''}`;
         
-        if (isSelected && selectedDifficulty === 'custom') {
+        const isCustom = (selectedDifficulty === 'custom' || selectedDifficulty >= 100);
+        if (isSelected && isCustom) {
             div.style.flexDirection = 'column';
             div.style.alignItems = 'stretch';
         }
@@ -571,7 +572,8 @@ function renderSongsList() {
         row.appendChild(deleteBtn);
         div.appendChild(row);
         
-        if (isSelected && selectedDifficulty === 'custom') {
+        const isCustom = (selectedDifficulty === 'custom' || selectedDifficulty >= 100);
+        if (isSelected && isCustom) {
             const customContainer = document.createElement('div');
             customContainer.className = 'custom-maps-list';
             customContainer.style.marginTop = '10px';
@@ -1943,8 +1945,8 @@ function updateDifficultyUI() {
     }
 
     diffBtns.forEach(btn => {
-        const diffAttr = btn.getAttribute('data-diff');
-        const isActive = (diffAttr === 'custom' && selectedDifficulty === 'custom') ||
+        const isCustom = (selectedDifficulty === 'custom' || selectedDifficulty >= 100);
+        const isActive = (diffAttr === 'custom' && isCustom) ||
                          (diffAttr !== 'custom' && parseInt(diffAttr) === selectedDifficulty);
         
         if (isActive) {
