@@ -46,9 +46,7 @@ const tabOnlineContent = document.getElementById('tab-online-content');
 // --- Game Constants ---
 const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
-    { x: 0, y: -1 },  // dir 1: up (-y)
-    { x: -1, y: 0 },  // dir 2: left (-x)
-    { x: 0, y: 1 }    // dir 3: down (+y)
+    { x: 0, y: -1 }   // dir 1: up (-y)
 ];
 let SPEED_PER_SEC = 160;
 const WALL_HALF_WIDTH = 25;
@@ -362,6 +360,8 @@ function initWebSocket() {
                             combo = data.combo;
                             if (combo > maxCombo) maxCombo = combo;
                             
+                            // Server confirmed the turn — accept authoritative state
+                            localPredictionActive = false;
                             const localP = players[localId];
                             if (localP) {
                                 localP.score = data.score;
@@ -382,7 +382,6 @@ function initWebSocket() {
                             if (notesHitCount % 5 === 0 && ws && ws.readyState === 1) {
                                 ws.send(JSON.stringify({
                                     type: 'statusReport',
-                                    alive: alive,
                                     score: score,
                                     combo: combo
                                 }));
@@ -393,7 +392,10 @@ function initWebSocket() {
                         if (players[data.id]) {
                             players[data.id].score = data.score;
                             players[data.id].combo = data.combo;
-                            players[data.id].turnIndex = data.turnIndex;
+                            // Only update turnIndex if defined (MISS doesn't include it)
+                            if (data.turnIndex !== undefined) {
+                                players[data.id].turnIndex = data.turnIndex;
+                            }
                         }
                         if (judgment !== 'MISS' && judgment !== 'Fast' && judgment !== 'Late') {
                             playEcho();

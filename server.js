@@ -444,9 +444,7 @@ app.delete('/api/songs/:id', (req, res) => {
 // --- Game Constants ---
 const DIR_VECS = [
     { x: 1, y: 0 },   // dir 0: right (+x)
-    { x: 0, y: -1 },  // dir 1: up (-y)
-    { x: -1, y: 0 },  // dir 2: left (-x)
-    { x: 0, y: 1 }    // dir 3: down (+y)
+    { x: 0, y: -1 }   // dir 1: up (-y)
 ];
 let SPEED_PER_SEC = 160;
 const WALL_HALF_WIDTH = 25;
@@ -832,7 +830,7 @@ wss.on('connection', (ws) => {
                         p.anchor = { x: p.x, y: p.y, time: t };
                         p.trail.push({ x: p.x, y: p.y });
                         sharedCombo = 0;
-                        broadcast({ type: 'hit', id, combo: 0, score: p.score, x: p.x, y: p.y, judgment: "MISS" });
+                        broadcast({ type: 'hit', id, combo: 0, score: p.score, x: p.x, y: p.y, judgment: "MISS", turnIndex: p.turnIndex });
                     }
                 }
                 break;
@@ -840,7 +838,7 @@ wss.on('connection', (ws) => {
             case 'statusReport': {
                 const p = players[id];
                 if (!p) return;
-                p.alive = data.alive !== undefined ? data.alive : p.alive;
+                // Do NOT overwrite p.alive — only the server physics loop controls alive state
                 p.score = data.score !== undefined ? data.score : p.score;
                 p.combo = data.combo !== undefined ? data.combo : p.combo;
                 p.maxCombo = Math.max(p.maxCombo || 0, p.combo);
