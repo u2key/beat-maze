@@ -1324,7 +1324,9 @@ function render(t, camX, camY) {
     ctx.fillStyle = '#0a0a1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    let camScale = 1.0;
+    // Dynamic base scale: scales down on smaller screens (e.g., mobile) to maintain same field of view
+    const baseScale = Math.max(0.4, Math.min(canvas.width, canvas.height) / 1000);
+    let camScale = baseScale;
     
     if (gameState === 'starting') {
         const elapsed = audioContext.currentTime - zoomStartTime;
@@ -1332,7 +1334,7 @@ function render(t, camX, camY) {
         const progress = Math.min(1, elapsed / zoomDuration);
         const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
         
-        camScale = 0.3 + 0.7 * ease;
+        camScale = baseScale * (0.3 + 0.7 * ease);
         const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : { x: 0, y: 0 };
         camX = 0 + (startPt.x - 0) * ease;
         camY = 0 + (startPt.y - 0) * ease;
