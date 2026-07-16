@@ -2402,45 +2402,60 @@ autoCalibBtn.addEventListener('click', () => {
         if (!calibActive) return;
         
         calibActive = false;
-        cleanupCalib();
+        // Clear tick timers only (not this finish handler's side effects)
+        calibTickTimers.forEach(t => {
+            if (t !== endTimer) clearTimeout(t);
+        });
+        calibTickTimers = [];
+        window.removeEventListener('keydown', handleCalibKey);
+        calibrationOverlay.removeEventListener('pointerdown', handleCalibTap);
         
-        const diffs = [];
-        calibTaps.forEach(tapTime => {
-            let closestTick = null;
-            let minDist = Infinity;
-            calibTicks.forEach(tickTime => {
-                const d = Math.abs(tapTime - tickTime);
-                if (d < minDist) {
-                    minDist = d;
-                    closestTick = tickTime;
+        try {
+            const diffs = [];
+            calibTaps.forEach(tapTime => {
+                let closestTick = null;
+                let minDist = Infinity;
+                calibTicks.forEach(tickTime => {
+                    const d = Math.abs(tapTime - tickTime);
+                    if (d < minDist) {
+                        minDist = d;
+                        closestTick = tickTime;
+                    }
+                });
+                
+                // Only keep taps closer than 250ms to any beat tick (prevent random clicks)
+                if (closestTick !== null && minDist < 0.25) {
+                    diffs.push(tapTime - closestTick);
                 }
             });
             
-            // Only keep taps closer than 250ms to any beat tick (prevent random clicks)
-            if (closestTick !== null && minDist < 0.25) {
-                diffs.push(tapTime - closestTick);
+            if (diffs.length < 5) {
+                calibStatusText.textContent = "Calibration failed: Too few taps detected!";
+                calibStatusText.style.color = "#ff1744";
+                setTimeout(closeCalib, 2200);
+                return;
             }
-        });
-        
-        if (diffs.length < 5) {
-            calibStatusText.textContent = "Calibration failed: Too few taps detected!";
+            
+            // Average (tap - tick): positive means user taps after the beep → compensate negative
+            const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+            const offsetMs = Math.round(-avgDiff * 1000);
+            const clampedOffsetMs = Math.max(-250, Math.min(250, offsetMs));
+            
+            calibrationOffset = clampedOffsetMs / 1000;
+            calibrationSlider.value = clampedOffsetMs;
+            calibrationVal.textContent = `${clampedOffsetMs > 0 ? '+' : ''}${clampedOffsetMs} ms`;
+            localStorage.setItem('beat_maze_calibration', clampedOffsetMs);
+            
+            calibStatusText.textContent = `Success! Delay: ${clampedOffsetMs} ms`;
+            calibStatusText.style.color = "#00e676";
+            setTimeout(closeCalib, 2500);
+        } catch (err) {
+            console.error("Calibration finish failed:", err);
+            calibStatusText.textContent = "Calibration failed (internal error).";
             calibStatusText.style.color = "#ff1744";
             setTimeout(closeCalib, 2200);
-            return;
         }
-        
-        // Calculate average difference (tapTime - tickTime)
-        const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
-        
-        calibrationOffset = clampedOffsetMs / 1000;
-        calibrationSlider.value = clampedOffsetMs;
-        calibrationVal.textContent = `${clampedOffsetMs > 0 ? '+' : ''}${clampedOffsetMs} ms`;
-        localStorage.setItem('beat_maze_calibration', clampedOffsetMs);
-        
-        calibStatusText.textContent = `Success! Delay: ${clampedOffsetMs} ms`;
-        calibStatusText.style.color = "#00e676";
-        setTimeout(closeCalib, 2500);
-    }, finishDelayMs);
+    }, Math.max(0, finishDelayMs));
     calibTickTimers.push(endTimer);
 });
 
