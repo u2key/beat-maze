@@ -82,6 +82,7 @@ let precalculatedPaths = {}; // playerId -> Path2D
 
 let currentLeaderboard = [];
 let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
+let currentPlaybackRate = 1.0;
 let diff5Unlocked = false;
 let latency = 0;
 let calibrationOffset = -0.08; // default -80ms
@@ -104,21 +105,79 @@ let notesHitCount = 0;
 // --- Editor Mode State ---
 let isEditorMode = false;
 let editorSongId = null;
+let editorMapId = null; // null = create new; number = editing existing map
 let editorSegments = [];
 let editorTracks = [];
 let editorPath2D = null;
 let editorCurrentTime = 0.0;
 let editorIsPlaying = false;
 let editorAudioSource = null;
-let editorAudioStartTime = 0;
+let editorPlayWallTime = 0;
+let editorSongAtPlayStart = 0;
 let editorZoomScale = 1.0;
 let editorBPM = 120;
+let editorPlaybackRate = 1.0;
+let editorBaseSegments = null; // original song segments for difficulty import
 let draggedTurnIndex = null;
 let initialTurnTime = 0.0;
 let initialMouseX = 0;
 let initialMouseY = 0;
 let hasDragged = false;
 let lastCheckedEditorTime = 0.0;
+
+function getLocalPlayerName() {
+    if (localId && players[localId] && players[localId].name) {
+        return players[localId].name;
+    }
+    return localStorage.getItem('beat_maze_username') || '';
+}
+
+function getSongTime(wallNow = (audioContext ? audioContext.currentTime : 0)) {
+    return (wallNow - gameStartTime) * currentPlaybackRate;
+}
+
+function getEditorSongTime(wallNow = (audioContext ? audioContext.currentTime : 0)) {
+    if (!editorIsPlaying) return editorCurrentTime;
+    return editorSongAtPlayStart + (wallNow - editorPlayWallTime) * editorPlaybackRate;
+}
+
+function clampPlaybackRate(rate) {
+    const r = Number(rate);
+    if (!Number.isFinite(r)) return 1.0;
+    return Math.max(0.5, Math.min(2.0, Math.round(r * 100) / 100));
+}
+
+function filterSegmentsByDifficultyClient(originalSegments, bpm, difficulty) {
+    if (!originalSegments || originalSegments.length === 0) {
+        return [{ time: 0.0, dir: 0 }];
+    }
+    if (difficulty === 3 || difficulty === 5 || originalSegments.length <= 2) {
+        return originalSegments.map(s => ({ time: s.time, dir: s.dir }));
+    }
+
+    const beatDuration = 60.0 / (bpm || 120);
+    const minGap = (difficulty === 2) ? beatDuration : (2.0 * beatDuration);
+
+    const filtered = [];
+    filtered.push({ time: originalSegments[0].time, dir: originalSegments[0].dir });
+
+    let lastKeptTime = originalSegments[0].time;
+    let currentDir = originalSegments[0].dir;
+
+    for (let i = 1; i < originalSegments.length - 1; i++) {
+        const seg = originalSegments[i];
+        if (seg.time - lastKeptTime >= minGap) {
+            currentDir = 1 - currentDir;
+            filtered.push({ time: seg.time, dir: currentDir });
+            lastKeptTime = seg.time;
+        }
+    }
+
+    const lastSeg = originalSegments[originalSegments.length - 1];
+    currentDir = 1 - currentDir;
+    filtered.push({ time: lastSeg.time, dir: currentDir });
+    return filtered;
+}
 
 // Judgment Popups System
 let judgmentPopups = [];
@@ -273,6 +332,7 @@ function initWebSocket() {
                 case 'difficultySelected':
                     console.log("difficultySelected received:", data.difficulty);
                     selectedDifficulty = data.difficulty;
+                    currentPlaybackRate = clampPlaybackRate(data.playbackRate == null ? 1.0 : data.playbackRate);
                     updateDifficultyUI();
                     if (selectedDifficulty >= 100 && selectedSongId) {
                         const song = songList.find(s => s.id === selectedSongId);
@@ -283,17 +343,20 @@ function initWebSocket() {
                                 const map = maps.find(m => m.id === customMapId);
                                 if (map && song) {
                                     const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
+                                    currentPlaybackRate = clampPlaybackRate(map.playback_rate == null ? currentPlaybackRate : map.playback_rate);
                                     loadedTrackData = {
                                         title: map.title,
                                         bpm: song.bpm || 120,
                                         leadIn: song.leadIn || 2.5,
-                                        segments: segments
+                                        segments: segments,
+                                        playback_rate: currentPlaybackRate
                                     };
                                     totalDuration = segments[segments.length - 1].time;
                                 }
                                 renderSongsList();
                             });
                     } else {
+                        currentPlaybackRate = 1.0;
                         renderSongsList();
                     }
                     break;
@@ -332,12 +395,14 @@ function initWebSocket() {
                     break;
                     
                 case 'startGame': {
+                    currentPlaybackRate = clampPlaybackRate(data.playbackRate == null ? currentPlaybackRate : data.playbackRate);
                     const adjustedDelay = Math.max(0, data.startDelay - latency);
                     handleStartGame(adjustedDelay, data.segments);
                     break;
                 }
                 
                 case 'startSpectating': {
+                    currentPlaybackRate = clampPlaybackRate(data.playbackRate == null ? currentPlaybackRate : data.playbackRate);
                     handleStartSpectating(data.elapsedT, data.segments);
                     break;
                 }
@@ -611,45 +676,79 @@ function renderSongsList() {
                             mapItem.style.alignItems = 'center';
                             mapItem.style.transition = 'all 0.2s';
                             
+                            const rateLabel = clampPlaybackRate(map.playback_rate == null ? 1.0 : map.playback_rate);
                             mapItem.innerHTML = `
-                                <div style="text-align: left;">
+                                <div style="text-align: left; flex: 1; min-width: 0;">
                                     <div style="font-weight: 700; font-size: 0.9rem; color: ${isMapSelected ? '#00e676' : '#fff'};">${map.title}</div>
-                                    <div style="font-size: 0.75rem; color: #b0bec5;">by ${map.creator_name}</div>
+                                    <div style="font-size: 0.75rem; color: #b0bec5;">by ${map.creator_name}${rateLabel !== 1 ? ` · ${rateLabel.toFixed(2)}x` : ''}</div>
                                 </div>
                             `;
-                            
-                            const deleteMapBtn = document.createElement('button');
-                            deleteMapBtn.innerHTML = '🗑️';
-                            deleteMapBtn.style.background = 'none';
-                            deleteMapBtn.style.border = 'none';
-                            deleteMapBtn.style.color = '#ff5252';
-                            deleteMapBtn.style.cursor = 'pointer';
-                            deleteMapBtn.style.fontSize = '1.0rem';
-                            deleteMapBtn.style.padding = '2px 6px';
-                            deleteMapBtn.style.transition = 'transform 0.2s';
-                            
-                            deleteMapBtn.addEventListener('mouseenter', () => deleteMapBtn.style.transform = 'scale(1.2)');
-                            deleteMapBtn.addEventListener('mouseleave', () => deleteMapBtn.style.transform = 'scale(1.0)');
-                            
-                            deleteMapBtn.addEventListener('click', async (e) => {
-                                e.stopPropagation();
-                                if (confirm(`Are you sure you want to delete custom map "${map.title}"?`)) {
-                                    try {
-                                        const res = await fetch(`./api/custom-maps/${map.id}`, { method: 'DELETE' });
-                                        const result = await res.json();
-                                        if (result.success) {
-                                            renderSongsList();
-                                        } else {
-                                            alert(result.error || "Failed to delete custom map.");
+
+                            const actions = document.createElement('div');
+                            actions.style.display = 'flex';
+                            actions.style.alignItems = 'center';
+                            actions.style.gap = '2px';
+                            actions.style.flexShrink = '0';
+
+                            const localName = getLocalPlayerName();
+                            const isOwner = localName && map.creator_name === localName;
+
+                            if (isOwner) {
+                                const editMapBtn = document.createElement('button');
+                                editMapBtn.innerHTML = '✏️';
+                                editMapBtn.title = 'Edit map';
+                                editMapBtn.style.background = 'none';
+                                editMapBtn.style.border = 'none';
+                                editMapBtn.style.color = '#ffeb3b';
+                                editMapBtn.style.cursor = 'pointer';
+                                editMapBtn.style.fontSize = '1.0rem';
+                                editMapBtn.style.padding = '2px 6px';
+                                editMapBtn.style.transition = 'transform 0.2s';
+                                editMapBtn.addEventListener('mouseenter', () => editMapBtn.style.transform = 'scale(1.2)');
+                                editMapBtn.addEventListener('mouseleave', () => editMapBtn.style.transform = 'scale(1.0)');
+                                editMapBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    enterEditorMode(song.id, map);
+                                });
+                                actions.appendChild(editMapBtn);
+
+                                const deleteMapBtn = document.createElement('button');
+                                deleteMapBtn.innerHTML = '🗑️';
+                                deleteMapBtn.title = 'Delete map';
+                                deleteMapBtn.style.background = 'none';
+                                deleteMapBtn.style.border = 'none';
+                                deleteMapBtn.style.color = '#ff5252';
+                                deleteMapBtn.style.cursor = 'pointer';
+                                deleteMapBtn.style.fontSize = '1.0rem';
+                                deleteMapBtn.style.padding = '2px 6px';
+                                deleteMapBtn.style.transition = 'transform 0.2s';
+                                deleteMapBtn.addEventListener('mouseenter', () => deleteMapBtn.style.transform = 'scale(1.2)');
+                                deleteMapBtn.addEventListener('mouseleave', () => deleteMapBtn.style.transform = 'scale(1.0)');
+                                deleteMapBtn.addEventListener('click', async (e) => {
+                                    e.stopPropagation();
+                                    if (confirm(`Are you sure you want to delete custom map "${map.title}"?`)) {
+                                        try {
+                                            const res = await fetch(`./api/custom-maps/${map.id}`, {
+                                                method: 'DELETE',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ creator_name: localName })
+                                            });
+                                            const result = await res.json();
+                                            if (result.success) {
+                                                renderSongsList();
+                                            } else {
+                                                alert(result.error || "Failed to delete custom map.");
+                                            }
+                                        } catch (err) {
+                                            console.error(err);
+                                            alert("Failed to delete custom map.");
                                         }
-                                    } catch (err) {
-                                        console.error(err);
-                                        alert("Failed to delete custom map.");
                                     }
-                                }
-                            });
-                            
-                            mapItem.appendChild(deleteMapBtn);
+                                });
+                                actions.appendChild(deleteMapBtn);
+                            }
+
+                            mapItem.appendChild(actions);
                             
                             mapItem.addEventListener('click', (e) => {
                                 e.stopPropagation();
@@ -679,7 +778,7 @@ function renderSongsList() {
                     createNewBtn.addEventListener('mouseleave', () => createNewBtn.style.background = 'rgba(0, 230, 118, 0.2)');
                     createNewBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        enterEditorMode(song.id);
+                        enterEditorMode(song.id, null);
                     });
                     customContainer.appendChild(createNewBtn);
                 })
@@ -767,10 +866,14 @@ async function downloadSongData(songId) {
                     const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
                     loadedTrackData.title = map.title;
                     loadedTrackData.segments = segments;
+                    currentPlaybackRate = clampPlaybackRate(map.playback_rate == null ? 1.0 : map.playback_rate);
+                    loadedTrackData.playback_rate = currentPlaybackRate;
                 }
             } catch (err) {
                 console.error("Failed to load custom map segments during download:", err);
             }
+        } else {
+            currentPlaybackRate = 1.0;
         }
         
         totalDuration = loadedTrackData.segments[loadedTrackData.segments.length - 1].time;
@@ -1132,6 +1235,10 @@ function handleStartGame(startDelayMs, serverSegments) {
     updateHUD(0);
     notesHitCount = 0;
     
+    if (serverSegments && serverSegments.length) {
+        totalDuration = serverSegments[serverSegments.length - 1].time;
+    }
+    
     // Precalculate paths
     precalculatedTracks = {};
     precalculatedPaths = {};
@@ -1174,6 +1281,7 @@ function handleStartGame(startDelayMs, serverSegments) {
     }
     audioSource = audioContext.createBufferSource();
     audioSource.buffer = loadedAudioBuffer;
+    audioSource.playbackRate.value = currentPlaybackRate;
     
     musicGainNode = audioContext.createGain();
     musicGainNode.gain.setValueAtTime(musicVolumeBoost, audioContext.currentTime);
@@ -1184,10 +1292,11 @@ function handleStartGame(startDelayMs, serverSegments) {
     if (nowTime < gameStartTime) {
         audioSource.start(gameStartTime);
     } else {
-        // Late join as spectator: align audio playback
-        const offset = nowTime - gameStartTime;
-        if (offset < loadedAudioBuffer.duration) {
-            audioSource.start(nowTime, offset);
+        // Late join as spectator: align audio playback (offset is song/buffer time)
+        const wallOffset = nowTime - gameStartTime;
+        const bufferOffset = wallOffset * currentPlaybackRate;
+        if (bufferOffset < loadedAudioBuffer.duration) {
+            audioSource.start(nowTime, bufferOffset);
         }
     }
     
@@ -1211,6 +1320,10 @@ function handleStartSpectating(elapsedT, serverSegments) {
         localP.finished = false;
     }
     
+    if (serverSegments && serverSegments.length) {
+        totalDuration = serverSegments[serverSegments.length - 1].time;
+    }
+    
     precalculatedTracks = {};
     precalculatedPaths = {};
     for (const id in players) {
@@ -1231,6 +1344,7 @@ function handleStartSpectating(elapsedT, serverSegments) {
     }
     audioSource = audioContext.createBufferSource();
     audioSource.buffer = loadedAudioBuffer;
+    audioSource.playbackRate.value = currentPlaybackRate;
     
     musicGainNode = audioContext.createGain();
     musicGainNode.gain.setValueAtTime(musicVolumeBoost, audioContext.currentTime);
@@ -1238,12 +1352,14 @@ function handleStartSpectating(elapsedT, serverSegments) {
     musicGainNode.connect(audioContext.destination);
     
     const nowTime = audioContext.currentTime;
+    const rate = currentPlaybackRate || 1.0;
+    // elapsedT is song/buffer time from server
     if (elapsedT < 0) {
-        // Scheduled in the future (countdown period)
-        gameStartTime = nowTime - elapsedT;
+        // Still in countdown: song time is negative in rate-scaled units
+        gameStartTime = nowTime - (elapsedT / rate);
         audioSource.start(gameStartTime, 0);
     } else {
-        gameStartTime = nowTime - elapsedT;
+        gameStartTime = nowTime - (elapsedT / rate);
         if (elapsedT < loadedAudioBuffer.duration) {
             audioSource.start(nowTime, elapsedT);
         }
@@ -1298,7 +1414,15 @@ function showResultsScreen(isClear) {
     const song = songList.find(s => s.id === selectedSongId);
     resultsSongTitle.textContent = song ? (song.title || selectedSongId) : (selectedSongId || "Unknown Song");
     
-    const diffStars = selectedDifficulty === 1 ? '★' : (selectedDifficulty === 2 ? '★★' : (selectedDifficulty === 3 ? '★★★' : '★★★★★'));
+    let diffStars = '★★★';
+    if (selectedDifficulty === 1) diffStars = '★';
+    else if (selectedDifficulty === 2) diffStars = '★★';
+    else if (selectedDifficulty === 3) diffStars = '★★★';
+    else if (selectedDifficulty === 5) diffStars = '★★★★★';
+    else if (selectedDifficulty === 'custom' || selectedDifficulty >= 100) {
+        const rateTxt = currentPlaybackRate !== 1 ? ` ${currentPlaybackRate.toFixed(2)}x` : '';
+        diffStars = `Custom${rateTxt}`;
+    }
     resultsDiff.textContent = `Difficulty: ${diffStars}`;
     resultsDiff.style.color = (selectedDifficulty === 5) ? '#ff1744' : '#00e676';
     
@@ -1327,7 +1451,7 @@ function showResultsScreen(isClear) {
     // Progress %
     let progressVal = 100;
     if (!isClear) {
-        const t = (audioContext.currentTime - gameStartTime);
+        const t = getSongTime();
         const totalTime = precalculatedTracks[localId] 
             ? precalculatedTracks[localId][precalculatedTracks[localId].length - 1].time 
             : 1;
@@ -1359,8 +1483,9 @@ function handleTap() {
     const localP = players[localId];
     if (localP && localP.spectator) return;
     
-    const tapTime = audioContext.currentTime - gameStartTime;
-    const calibratedTime = tapTime + calibrationOffset;
+    const tapTime = getSongTime();
+    // Calibration is wall-clock latency; scale into song-time at current playback rate
+    const calibratedTime = tapTime + (calibrationOffset * currentPlaybackRate);
     
     // Client-side prediction: immediately update visual state for responsiveness
     // This eliminates the RTT delay between tapping and seeing the direction change
@@ -1412,24 +1537,7 @@ window.addEventListener('pointerdown', (e) => {
     
     if (isEditorMode) {
         if (editorIsPlaying) {
-            const tapTime = audioContext.currentTime - editorAudioStartTime;
-            const calibratedTime = tapTime + calibrationOffset;
-            const beatDuration = 60.0 / editorBPM;
-            const stepSize = beatDuration / 4;
-            
-            let snappedTime;
-            if (editorSegments.length <= 1) {
-                snappedTime = calibratedTime;
-            } else {
-                const firstTime = editorSegments[1].time;
-                snappedTime = firstTime + Math.round((calibratedTime - firstTime) / stepSize) * stepSize;
-            }
-            
-            if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.05)) {
-                editorSegments.push({ time: snappedTime, dir: 0 });
-                sortAndRebuildDirections();
-                playLocalTurnFeedback('excellent', editorSegments.length - 1);
-            }
+            placeEditorNoteAtSongTime(getEditorSongTime() + (calibrationOffset * editorPlaybackRate));
         }
         return;
     }
@@ -1438,29 +1546,12 @@ window.addEventListener('pointerdown', (e) => {
 window.addEventListener('keydown', (e) => {
     if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) {
         if (songSelection.style.display !== 'none') return;
-        if (document.activeElement.tagName === 'INPUT') return;
+        if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT') return;
         e.preventDefault();
         
         if (isEditorMode) {
             if (editorIsPlaying) {
-                const tapTime = audioContext.currentTime - editorAudioStartTime;
-                const calibratedTime = tapTime + calibrationOffset;
-                const beatDuration = 60.0 / editorBPM;
-                const stepSize = beatDuration / 4;
-                
-                let snappedTime;
-                if (editorSegments.length <= 1) {
-                    snappedTime = calibratedTime;
-                } else {
-                    const firstTime = editorSegments[1].time;
-                    snappedTime = firstTime + Math.round((calibratedTime - firstTime) / stepSize) * stepSize;
-                }
-                
-                if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.05)) {
-                    editorSegments.push({ time: snappedTime, dir: 0 });
-                    sortAndRebuildDirections();
-                    playLocalTurnFeedback('excellent', editorSegments.length - 1);
-                }
+                placeEditorNoteAtSongTime(getEditorSongTime() + (calibrationOffset * editorPlaybackRate));
             }
             return;
         }
@@ -1555,10 +1646,11 @@ function gameLoop() {
     
     if (isEditorMode) {
         if (editorIsPlaying) {
-            editorCurrentTime = now - editorAudioStartTime;
-            if (editorCurrentTime >= loadedAudioBuffer.duration) {
+            editorCurrentTime = getEditorSongTime(now);
+            const maxDur = loadedAudioBuffer ? loadedAudioBuffer.duration : 100;
+            if (editorCurrentTime >= maxDur) {
                 editorPause();
-                editorCurrentTime = loadedAudioBuffer.duration;
+                editorCurrentTime = maxDur;
             }
             
             // Auto-play turns feedback sound
@@ -1582,7 +1674,7 @@ function gameLoop() {
         return;
     }
     
-    let t = now - gameStartTime;
+    let t = getSongTime(now);
     
     if (gameState === 'starting') {
         if (now >= gameStartTime) {
@@ -2204,6 +2296,7 @@ autoCalibBtn.addEventListener('click', () => {
 function selectCustomMap(map) {
     const diff = 100 + map.id;
     selectedDifficulty = diff;
+    currentPlaybackRate = clampPlaybackRate(map.playback_rate == null ? 1.0 : map.playback_rate);
     
     try {
         const segments = typeof map.segments === 'string' ? JSON.parse(map.segments) : map.segments;
@@ -2211,7 +2304,8 @@ function selectCustomMap(map) {
             title: map.title,
             bpm: selectedSongId ? (songList.find(s => s.id === selectedSongId)?.bpm || 120) : 120,
             leadIn: selectedSongId ? (songList.find(s => s.id === selectedSongId)?.leadIn || 2.5) : 2.5,
-            segments: segments
+            segments: segments,
+            playback_rate: currentPlaybackRate
         };
         totalDuration = segments[segments.length - 1].time;
     } catch (e) {
@@ -2226,12 +2320,200 @@ function selectCustomMap(map) {
     renderSongsList();
 }
 
-function enterEditorMode(songId) {
+function setEditorPlaybackRateUI(rate) {
+    editorPlaybackRate = clampPlaybackRate(rate);
+    const slider = document.getElementById('editor-rate-slider');
+    const label = document.getElementById('editor-rate-val');
+    if (slider) slider.value = String(editorPlaybackRate);
+    if (label) label.textContent = `${editorPlaybackRate.toFixed(2)}x`;
+}
+
+function applyEditorSegments(segments, { rebuild = true } = {}) {
+    if (!segments || !segments.length) {
+        editorSegments = [{ time: 0.0, dir: 0 }];
+    } else {
+        editorSegments = segments.map(s => ({ time: s.time, dir: s.dir || 0 }));
+        if (editorSegments[0].time !== 0) {
+            editorSegments.unshift({ time: 0.0, dir: 0 });
+        }
+    }
+    if (rebuild) sortAndRebuildDirections();
+}
+
+function placeEditorNoteAtSongTime(calibratedTime) {
+    const beatDuration = 60.0 / editorBPM;
+    const stepSize = beatDuration / 4;
+
+    let snappedTime;
+    if (editorSegments.length <= 1) {
+        snappedTime = calibratedTime;
+    } else {
+        const firstTime = editorSegments[1].time;
+        snappedTime = firstTime + Math.round((calibratedTime - firstTime) / stepSize) * stepSize;
+    }
+
+    if (snappedTime > 0.05 && !editorSegments.some(s => Math.abs(s.time - snappedTime) < 0.05)) {
+        editorSegments.push({ time: snappedTime, dir: 0 });
+        sortAndRebuildDirections();
+        playLocalTurnFeedback('excellent', editorSegments.length - 1);
+    }
+}
+
+async function populateEditorImportOptions(songId, excludeMapId = null) {
+    const select = document.getElementById('editor-import-select');
+    if (!select) return;
+
+    // Keep static options; rebuild dynamic custom map options
+    select.innerHTML = `
+        <option value="">Import chart...</option>
+        <option value="blank">Empty</option>
+        <option value="diff:1">★ Easy</option>
+        <option value="diff:2">★★ Medium</option>
+        <option value="diff:3">★★★ Hard</option>
+        <option value="diff:5">★★★★★ Brutal</option>
+    `;
+
+    try {
+        const res = await fetch(`./api/custom-maps?song_id=${encodeURIComponent(songId)}`);
+        const maps = await res.json();
+        if (Array.isArray(maps) && maps.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Custom maps';
+            maps.forEach(map => {
+                if (excludeMapId != null && map.id === excludeMapId) return;
+                const opt = document.createElement('option');
+                const rate = clampPlaybackRate(map.playback_rate == null ? 1.0 : map.playback_rate);
+                opt.value = `custom:${map.id}`;
+                opt.textContent = `${map.title} (by ${map.creator_name}${rate !== 1 ? `, ${rate.toFixed(2)}x` : ''})`;
+                opt.dataset.segments = typeof map.segments === 'string' ? map.segments : JSON.stringify(map.segments);
+                opt.dataset.rate = String(rate);
+                group.appendChild(opt);
+            });
+            if (group.children.length) select.appendChild(group);
+        }
+    } catch (err) {
+        console.error("Failed to load custom maps for import:", err);
+    }
+    select.value = '';
+}
+
+async function importEditorChart(sourceValue) {
+    if (!sourceValue) return;
+
+    if (sourceValue === 'blank') {
+        applyEditorSegments([{ time: 0.0, dir: 0 }]);
+        return;
+    }
+
+    if (sourceValue.startsWith('diff:')) {
+        const diff = parseInt(sourceValue.split(':')[1], 10);
+        let base = editorBaseSegments;
+        if (!base || !base.length) {
+            // Fall back to currently loaded track data or fetch song json
+            if (loadedTrackData && loadedTrackData.segments && selectedSongId === editorSongId) {
+                base = loadedTrackData.segments;
+            } else {
+                const song = songList.find(s => s.id === editorSongId);
+                if (song) {
+                    const res = await fetch(song.json);
+                    const data = await res.json();
+                    base = data.segments || [];
+                    editorBaseSegments = base;
+                    editorBPM = data.bpm || editorBPM;
+                }
+            }
+        }
+        const filtered = filterSegmentsByDifficultyClient(base, editorBPM, diff);
+        applyEditorSegments(filtered);
+        return;
+    }
+
+    if (sourceValue.startsWith('custom:')) {
+        const select = document.getElementById('editor-import-select');
+        const opt = select ? select.selectedOptions[0] : null;
+        if (opt && opt.dataset.segments) {
+            try {
+                const segs = JSON.parse(opt.dataset.segments);
+                applyEditorSegments(segs);
+                if (opt.dataset.rate) {
+                    setEditorPlaybackRateUI(opt.dataset.rate);
+                    if (editorIsPlaying) editorSeek(editorCurrentTime);
+                }
+            } catch (e) {
+                console.error("Failed to import custom map segments:", e);
+                alert("Failed to import custom map.");
+            }
+        }
+    }
+}
+
+async function enterEditorMode(songId, existingMap = null) {
     unlockAudio();
+
+    // Ensure audio for this song is loaded
+    if (selectedSongId !== songId || !loadedAudioBuffer) {
+        selectedSongId = songId;
+        if (ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'selectSong', songId }));
+        }
+        await downloadSongData(songId);
+    }
+
     isEditorMode = true;
     editorSongId = songId;
-    
-    editorSegments = [{ time: 0.0, dir: 0 }];
+    editorMapId = existingMap ? existingMap.id : null;
+
+    const song = songList.find(s => s.id === songId);
+    editorBPM = song ? (song.bpm || 120) : 120;
+    editorBaseSegments = (loadedTrackData && loadedTrackData.segments && !existingMap)
+        ? loadedTrackData.segments.map(s => ({ time: s.time, dir: s.dir }))
+        : null;
+
+    // Prefer original song segments for difficulty import (not custom overlay)
+    try {
+        if (song) {
+            const res = await fetch(song.json);
+            const data = await res.json();
+            editorBaseSegments = data.segments || editorBaseSegments;
+            editorBPM = data.bpm || editorBPM;
+        }
+    } catch (e) {
+        console.warn("Could not load base song segments for import:", e);
+    }
+
+    if (existingMap) {
+        const localName = getLocalPlayerName();
+        if (!localName || existingMap.creator_name !== localName) {
+            alert("Only the map creator can edit this map.");
+            isEditorMode = false;
+            editorMapId = null;
+            return;
+        }
+        try {
+            const segs = typeof existingMap.segments === 'string'
+                ? JSON.parse(existingMap.segments)
+                : existingMap.segments;
+            applyEditorSegments(segs, { rebuild: false });
+        } catch (e) {
+            console.error(e);
+            applyEditorSegments([{ time: 0.0, dir: 0 }], { rebuild: false });
+        }
+        setEditorPlaybackRateUI(existingMap.playback_rate == null ? 1.0 : existingMap.playback_rate);
+        document.getElementById('editor-title-input').value = existingMap.title || '';
+        document.getElementById('editor-creator-input').value = existingMap.creator_name || localName;
+        document.getElementById('editor-creator-input').disabled = true;
+        document.getElementById('editor-mode-label').textContent = 'EDIT MAP';
+        document.getElementById('editor-save-btn').textContent = 'UPDATE MAP';
+    } else {
+        applyEditorSegments([{ time: 0.0, dir: 0 }], { rebuild: false });
+        setEditorPlaybackRateUI(1.0);
+        document.getElementById('editor-title-input').value = '';
+        document.getElementById('editor-creator-input').value = getLocalPlayerName() || 'Creator';
+        document.getElementById('editor-creator-input').disabled = false;
+        document.getElementById('editor-mode-label').textContent = 'EDITOR MODE';
+        document.getElementById('editor-save-btn').textContent = 'SAVE MAP';
+    }
+
     editorTracks = precalculatePathPoints(editorSegments, 0);
     editorPath2D = new Path2D();
     editorCurrentTime = 0.0;
@@ -2239,31 +2521,26 @@ function enterEditorMode(songId) {
     editorZoomScale = 1.0;
     draggedTurnIndex = null;
     lastCheckedEditorTime = 0.0;
-    
+
     document.getElementById('editor-controls').style.display = 'flex';
     songSelection.style.display = 'none';
     resultsOverlay.style.display = 'none';
-    
-    const song = songList.find(s => s.id === songId);
-    editorBPM = song ? (song.bpm || 120) : 120;
-    
-    document.getElementById('editor-title-input').value = "";
-    document.getElementById('editor-creator-input').value = localStorage.getItem('beat_maze_username') || "Creator";
-    
+
     const editorTimeline = document.getElementById('editor-timeline');
     if (loadedAudioBuffer) {
         editorTimeline.max = loadedAudioBuffer.duration;
         document.getElementById('editor-time-total').textContent = formatTime(loadedAudioBuffer.duration);
     } else {
         editorTimeline.max = 100;
-        document.getElementById('editor-time-total').textContent = "0:00";
+        document.getElementById('editor-time-total').textContent = '0:00';
     }
     editorTimeline.value = 0;
-    document.getElementById('editor-time-current').textContent = "0:00";
-    document.getElementById('editor-play-btn').textContent = "▶️";
-    
+    document.getElementById('editor-time-current').textContent = '0:00';
+    document.getElementById('editor-play-btn').textContent = '▶️';
+
+    await populateEditorImportOptions(songId, editorMapId);
     sortAndRebuildDirections();
-    
+
     gameState = 'playing';
     if (drawReqId) cancelAnimationFrame(drawReqId);
     drawReqId = requestAnimationFrame(gameLoop);
@@ -2272,7 +2549,12 @@ function enterEditorMode(songId) {
 function editorExit() {
     editorPause();
     isEditorMode = false;
+    editorMapId = null;
+    editorBaseSegments = null;
     document.getElementById('editor-controls').style.display = 'none';
+    document.getElementById('editor-creator-input').disabled = false;
+    document.getElementById('editor-mode-label').textContent = 'EDITOR MODE';
+    document.getElementById('editor-save-btn').textContent = 'SAVE MAP';
     
     gameState = 'idle';
     if (drawReqId) cancelAnimationFrame(drawReqId);
@@ -2283,13 +2565,14 @@ function editorExit() {
 }
 
 function editorPlay() {
-    if (editorIsPlaying || !loadedAudioBuffer) return;
+    if (editorIsPlaying || !loadedAudioBuffer || !audioContext) return;
     if (editorCurrentTime >= loadedAudioBuffer.duration) {
         editorCurrentTime = 0;
     }
     
     editorAudioSource = audioContext.createBufferSource();
     editorAudioSource.buffer = loadedAudioBuffer;
+    editorAudioSource.playbackRate.value = editorPlaybackRate;
     
     musicGainNode = audioContext.createGain();
     musicGainNode.gain.setValueAtTime(musicVolumeBoost || 1.0, audioContext.currentTime);
@@ -2297,7 +2580,8 @@ function editorPlay() {
     musicGainNode.connect(audioContext.destination);
     
     editorAudioSource.start(0, editorCurrentTime);
-    editorAudioStartTime = audioContext.currentTime - editorCurrentTime;
+    editorSongAtPlayStart = editorCurrentTime;
+    editorPlayWallTime = audioContext.currentTime;
     editorIsPlaying = true;
     
     document.getElementById('editor-play-btn').textContent = "⏸️";
@@ -2305,9 +2589,9 @@ function editorPlay() {
 
 function editorPause() {
     if (!editorIsPlaying) return;
-    editorCurrentTime = audioContext.currentTime - editorAudioStartTime;
+    editorCurrentTime = getEditorSongTime();
     try {
-        editorAudioSource.stop();
+        if (editorAudioSource) editorAudioSource.stop();
     } catch(e) {}
     editorIsPlaying = false;
     
@@ -2315,19 +2599,22 @@ function editorPause() {
 }
 
 function editorSeek(targetTime) {
-    editorCurrentTime = Math.max(0, Math.min(loadedAudioBuffer ? loadedAudioBuffer.duration : 100, targetTime));
+    const maxDur = loadedAudioBuffer ? loadedAudioBuffer.duration : 100;
+    editorCurrentTime = Math.max(0, Math.min(maxDur, targetTime));
+    lastCheckedEditorTime = editorCurrentTime;
     
     const editorTimeline = document.getElementById('editor-timeline');
     if (editorTimeline) editorTimeline.value = editorCurrentTime;
     const timeCurrent = document.getElementById('editor-time-current');
     if (timeCurrent) timeCurrent.textContent = formatTime(editorCurrentTime);
     
-    if (editorIsPlaying) {
+    if (editorIsPlaying && loadedAudioBuffer && audioContext) {
         try {
-            editorAudioSource.stop();
+            if (editorAudioSource) editorAudioSource.stop();
         } catch(e) {}
         editorAudioSource = audioContext.createBufferSource();
         editorAudioSource.buffer = loadedAudioBuffer;
+        editorAudioSource.playbackRate.value = editorPlaybackRate;
         
         musicGainNode = audioContext.createGain();
         musicGainNode.gain.setValueAtTime(musicVolumeBoost || 1.0, audioContext.currentTime);
@@ -2335,7 +2622,8 @@ function editorSeek(targetTime) {
         musicGainNode.connect(audioContext.destination);
         
         editorAudioSource.start(0, editorCurrentTime);
-        editorAudioStartTime = audioContext.currentTime - editorCurrentTime;
+        editorSongAtPlayStart = editorCurrentTime;
+        editorPlayWallTime = audioContext.currentTime;
     }
 }
 
@@ -2571,21 +2859,28 @@ document.getElementById('editor-save-btn').addEventListener('click', () => {
         alert("Please place at least one turn note to save!");
         return;
     }
+
+    const payload = {
+        song_id: editorSongId,
+        creator_name: creator,
+        title: title,
+        segments: editorSegments,
+        playback_rate: editorPlaybackRate
+    };
+
+    const isUpdate = editorMapId != null;
+    const url = isUpdate ? `./api/custom-maps/${editorMapId}` : './api/custom-maps';
+    const method = isUpdate ? 'PUT' : 'POST';
     
-    fetch('./api/custom-maps', {
-        method: 'POST',
+    fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            song_id: editorSongId,
-            creator_name: creator,
-            title: title,
-            segments: editorSegments
-        })
+        body: JSON.stringify(payload)
     })
     .then(res => res.json())
     .then(result => {
         if (result.success) {
-            alert("Custom map saved successfully!");
+            alert(isUpdate ? "Custom map updated successfully!" : "Custom map saved successfully!");
             editorExit();
         } else {
             alert("Failed to save map: " + (result.error || "unknown error"));
@@ -2599,5 +2894,29 @@ document.getElementById('editor-save-btn').addEventListener('click', () => {
 document.getElementById('editor-exit-btn').addEventListener('click', () => {
     if (confirm("Are you sure you want to exit without saving?")) {
         editorExit();
+    }
+});
+
+document.getElementById('editor-import-select').addEventListener('change', async (e) => {
+    const value = e.target.value;
+    if (!value) return;
+    if (!confirm('Importing will replace the current chart notes. Continue?')) {
+        e.target.value = '';
+        return;
+    }
+    try {
+        await importEditorChart(value);
+    } catch (err) {
+        console.error(err);
+        alert('Failed to import chart: ' + err.message);
+    }
+    e.target.value = '';
+});
+
+document.getElementById('editor-rate-slider').addEventListener('input', (e) => {
+    setEditorPlaybackRateUI(e.target.value);
+    if (editorIsPlaying) {
+        // Restart audio at new rate without moving the playhead
+        editorSeek(editorCurrentTime);
     }
 });

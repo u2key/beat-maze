@@ -64,6 +64,10 @@ db.serialize(() => {
         db.run(`ALTER TABLE leaderboard ADD COLUMN max_combo INTEGER DEFAULT 0`, (err) => {
             // Ignore error if column already exists
         });
+
+        db.run(`ALTER TABLE custom_maps ADD COLUMN playback_rate REAL DEFAULT 1.0`, (err) => {
+            // Ignore error if column already exists
+        });
         
         // Auto-migration from leaderboard.json
         const jsonPath = path.join(__dirname, 'leaderboard.json');
@@ -287,11 +291,17 @@ app.get('/api/songs', (req, res) => {
     res.json(getSongsList());
 });
 
+function clampPlaybackRate(rate) {
+    const r = Number(rate);
+    if (!Number.isFinite(r)) return 1.0;
+    return Math.max(0.5, Math.min(2.0, Math.round(r * 100) / 100));
+}
+
 app.get('/api/custom-maps', (req, res) => {
     const songId = req.query.song_id;
     if (!songId) return res.status(400).json({ error: "song_id is required" });
     db.all(
-        `SELECT id, song_id, creator_name, title, segments, created_at FROM custom_maps WHERE song_id = ? ORDER BY id DESC`,
+        `SELECT id, song_id, creator_name, title, segments, created_at, COALESCE(playback_rate, 1.0) as playback_rate FROM custom_maps WHERE song_id = ? ORDER BY id DESC`,
         [songId],
         (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
@@ -301,32 +311,79 @@ app.get('/api/custom-maps', (req, res) => {
 });
 
 app.post('/api/custom-maps', (req, res) => {
-    const { song_id, creator_name, title, segments } = req.body;
+    const { song_id, creator_name, title, segments, playback_rate } = req.body;
     if (!song_id || !creator_name || !title || !segments) {
         return res.status(400).json({ error: "song_id, creator_name, title, and segments are required." });
     }
     const createdAt = new Date().toISOString();
     const segmentsStr = typeof segments === 'string' ? segments : JSON.stringify(segments);
+    const rate = clampPlaybackRate(playback_rate == null ? 1.0 : playback_rate);
     db.run(
-        `INSERT INTO custom_maps (song_id, creator_name, title, segments, created_at) VALUES (?, ?, ?, ?, ?)`,
-        [song_id, creator_name, title, segmentsStr, createdAt],
+        `INSERT INTO custom_maps (song_id, creator_name, title, segments, created_at, playback_rate) VALUES (?, ?, ?, ?, ?, ?)`,
+        [song_id, creator_name, title, segmentsStr, createdAt, rate],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, id: this.lastID });
+            res.json({ success: true, id: this.lastID, playback_rate: rate });
         }
     );
 });
 
+app.put('/api/custom-maps/:id', (req, res) => {
+    const id = req.params.id;
+    const { creator_name, title, segments, playback_rate } = req.body;
+    if (!creator_name) {
+        return res.status(400).json({ error: "creator_name is required." });
+    }
+    if (!title || !segments) {
+        return res.status(400).json({ error: "title and segments are required." });
+    }
+    const segmentsStr = typeof segments === 'string' ? segments : JSON.stringify(segments);
+    const rate = clampPlaybackRate(playback_rate == null ? 1.0 : playback_rate);
+
+    db.get(`SELECT id, creator_name FROM custom_maps WHERE id = ?`, [id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: "Custom map not found." });
+        if (row.creator_name !== creator_name) {
+            return res.status(403).json({ error: "Only the map creator can edit this map." });
+        }
+        db.run(
+            `UPDATE custom_maps SET title = ?, segments = ?, playback_rate = ? WHERE id = ? AND creator_name = ?`,
+            [title, segmentsStr, rate, id, creator_name],
+            function(updateErr) {
+                if (updateErr) return res.status(500).json({ error: updateErr.message });
+                if (this.changes === 0) {
+                    return res.status(403).json({ error: "Only the map creator can edit this map." });
+                }
+                res.json({ success: true, id: Number(id), playback_rate: rate });
+            }
+        );
+    });
+});
+
 app.delete('/api/custom-maps/:id', (req, res) => {
     const id = req.params.id;
-    db.run(
-        `DELETE FROM custom_maps WHERE id = ?`,
-        [id],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
+    const creatorName = (req.body && req.body.creator_name) || req.query.creator_name;
+    if (!creatorName) {
+        return res.status(400).json({ error: "creator_name is required to delete a custom map." });
+    }
+    db.get(`SELECT id, creator_name FROM custom_maps WHERE id = ?`, [id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: "Custom map not found." });
+        if (row.creator_name !== creatorName) {
+            return res.status(403).json({ error: "Only the map creator can delete this map." });
         }
-    );
+        db.run(
+            `DELETE FROM custom_maps WHERE id = ? AND creator_name = ?`,
+            [id, creatorName],
+            function(delErr) {
+                if (delErr) return res.status(500).json({ error: delErr.message });
+                if (this.changes === 0) {
+                    return res.status(403).json({ error: "Only the map creator can delete this map." });
+                }
+                res.json({ success: true });
+            }
+        );
+    });
 });
 
 // Endpoint to register online sound source via ffmpeg-video and yt-dlp
@@ -530,6 +587,11 @@ let sharedCombo = 0;
 let gameState = 'idle'; // idle | starting | playing
 let selectedDifficulty = 3; // 1: Easy (★), 2: Medium (★★), 3: Hard (★★★)
 let gameEndTimeout = null;
+let currentPlaybackRate = 1.0;
+
+function getServerSongTime() {
+    return ((Date.now() - gameStartTime) / 1000) * currentPlaybackRate;
+}
 
 // Helper math for collision
 function pointToSegmentDist(px, py, x1, y1, x2, y2) {
@@ -668,15 +730,21 @@ wss.on('connection', (ws) => {
                 if (gameState === 'idle') {
                     const diff = parseInt(data.difficulty) || 3;
                     
-                    const finishDifficultySelect = (customSegments) => {
+                    const finishDifficultySelect = (customSegments, playbackRate = 1.0) => {
                         selectedDifficulty = diff;
                         SPEED_PER_SEC = selectedDifficulty === 5 ? 360 : 160;
+                        currentPlaybackRate = clampPlaybackRate(playbackRate);
                         if (customSegments) {
                             customTrackSegments = customSegments;
                         } else {
                             customTrackSegments = null;
+                            currentPlaybackRate = 1.0;
                         }
-                        broadcast({ type: 'difficultySelected', difficulty: selectedDifficulty });
+                        broadcast({
+                            type: 'difficultySelected',
+                            difficulty: selectedDifficulty,
+                            playbackRate: currentPlaybackRate
+                        });
                         
                         if (selectedSong) {
                             broadcastLeaderboard(selectedSong.id, selectedDifficulty);
@@ -685,27 +753,31 @@ wss.on('connection', (ws) => {
 
                     if (diff >= 100) {
                         const customMapId = diff - 100;
-                        db.get(`SELECT segments FROM custom_maps WHERE id = ?`, [customMapId], (err, row) => {
-                            if (row) {
-                                try {
-                                    const customSegments = JSON.parse(row.segments);
-                                    finishDifficultySelect(customSegments);
-                                } catch (e) {
-                                    console.error("Failed to parse custom map segments:", e);
-                                    finishDifficultySelect(null);
+                        db.get(
+                            `SELECT segments, COALESCE(playback_rate, 1.0) as playback_rate FROM custom_maps WHERE id = ?`,
+                            [customMapId],
+                            (err, row) => {
+                                if (row) {
+                                    try {
+                                        const customSegments = JSON.parse(row.segments);
+                                        finishDifficultySelect(customSegments, row.playback_rate);
+                                    } catch (e) {
+                                        console.error("Failed to parse custom map segments:", e);
+                                        finishDifficultySelect(null, 1.0);
+                                    }
+                                } else {
+                                    finishDifficultySelect(null, 1.0);
                                 }
-                            } else {
-                                finishDifficultySelect(null);
                             }
-                        });
+                        );
                     } else if (diff === 5) {
                         const p = players[id];
                         if (!p || !selectedSong) return;
                         isDiff5Unlocked(selectedSong.id, p.name, (unlocked) => {
-                            if (unlocked) finishDifficultySelect();
+                            if (unlocked) finishDifficultySelect(null, 1.0);
                         });
                     } else {
-                        finishDifficultySelect();
+                        finishDifficultySelect(null, 1.0);
                     }
                 }
                 break;
@@ -732,11 +804,12 @@ wss.on('connection', (ws) => {
                             filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
                         }
                         trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
-                        const currentT = (Date.now() - gameStartTime) / 1000;
+                        const currentT = getServerSongTime();
                         ws.send(JSON.stringify({
                             type: 'startSpectating',
                             segments: filteredSegments,
-                            elapsedT: currentT
+                            elapsedT: currentT,
+                            playbackRate: currentPlaybackRate
                         }));
                     }
                     return;
@@ -761,6 +834,7 @@ wss.on('connection', (ws) => {
                     filteredSegments = customTrackSegments;
                 } else {
                     filteredSegments = filterSegmentsByDifficulty(trackSegments, selectedSong.bpm, selectedDifficulty);
+                    currentPlaybackRate = 1.0;
                 }
                 
                 // Reset and precalculate paths for active players
@@ -784,7 +858,12 @@ wss.on('connection', (ws) => {
                     p.finished = false;
                 }
                 
-                broadcast({ type: 'startGame', startDelay, segments: filteredSegments });
+                broadcast({
+                    type: 'startGame',
+                    startDelay,
+                    segments: filteredSegments,
+                    playbackRate: currentPlaybackRate
+                });
                 
                 if (gameInterval) clearInterval(gameInterval);
                 
@@ -813,11 +892,12 @@ wss.on('connection', (ws) => {
                     }
                     trackTurnPoints[id] = precalculatePathPoints(filteredSegments, p.spawnIndex);
                     
-                    const currentT = (Date.now() - gameStartTime) / 1000;
+                    const currentT = getServerSongTime();
                     ws.send(JSON.stringify({
                         type: 'startSpectating',
                         segments: filteredSegments,
-                        elapsedT: currentT
+                        elapsedT: currentT,
+                        playbackRate: currentPlaybackRate
                     }));
                 }
                 break;
@@ -842,7 +922,7 @@ wss.on('connection', (ws) => {
                 const p = players[id];
                 if (!p || !p.alive || p.spectator) return;
                 
-                const serverT = (Date.now() - gameStartTime) / 1000;
+                const serverT = getServerSongTime();
                 const t = (typeof data.time === 'number') ? data.time : serverT;
                 
                 // Cheat prevention: reject if client time deviates by more than 1.0s from server time
@@ -988,7 +1068,7 @@ wss.on('connection', (ws) => {
 function updatePhysics() {
     if (gameState === 'idle') return;
     
-    const t = (Date.now() - gameStartTime) / 1000;
+    const t = getServerSongTime();
     
     let allFinished = true;
     let anyAlive = false;
