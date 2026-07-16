@@ -613,38 +613,62 @@ function grantComboLifeIfNeeded(p) {
     }
 }
 
+/** Song-time invulnerability after spending a life (prevents double-charge: miss + wall). */
+const LIFE_GRACE_SEC = 0.65;
+
 /**
- * Consume one life to survive a fatal miss. Snaps player back onto the corridor.
- * Returns true if the player survived (life remaining after consume), false if they die.
+ * Place player on the corridor at song time t.
+ * Advances through any fully passed turns and sets anchor.time = t so the next
+ * physics step does not instantly re-apply a large elapsed distance (which used
+ * to punch through walls and burn a second life).
+ */
+function placePlayerOnTrackAtTime(p, turnPoints, t) {
+    if (!p || !turnPoints || turnPoints.length === 0) return;
+
+    // Catch up turnIndex for every note fully passed at time t
+    while (
+        p.turnIndex + 1 < turnPoints.length &&
+        turnPoints[p.turnIndex + 1].time <= t
+    ) {
+        p.turnIndex++;
+        const tp = turnPoints[p.turnIndex];
+        if (tp) p.trail.push({ x: tp.x, y: tp.y });
+    }
+
+    const cur = turnPoints[p.turnIndex];
+    if (!cur) return;
+
+    p.currentDir = cur.dir;
+    const elapsed = Math.max(0, t - cur.time);
+    const dist = elapsed * SPEED_PER_SEC;
+    const dv = DIR_VECS[cur.dir] || DIR_VECS[0];
+    p.x = cur.x + dv.x * dist;
+    p.y = cur.y + dv.y * dist;
+    // Critical: anchor at *current* song time so physics doesn't double-count lag
+    p.anchor = { x: p.x, y: p.y, time: t };
+}
+
+/**
+ * Consume one life to survive a fatal miss, or silently re-snap during grace.
+ * Returns true if the player should keep playing (survived or still in grace).
  */
 function trySurviveWithLife(p, turnPoints, t, reason) {
-    if (!p || (p.lives || 0) <= 0) return false;
+    if (!p || !turnPoints) return false;
+
+    // Already paid a life moments ago — keep them on track without another charge
+    if (p.lifeGraceUntil != null && t < p.lifeGraceUntil) {
+        placePlayerOnTrackAtTime(p, turnPoints, t);
+        return true;
+    }
+
+    if ((p.lives || 0) <= 0) return false;
 
     p.lives -= 1;
     sharedCombo = 0;
     p.combo = 0;
+    p.lifeGraceUntil = t + LIFE_GRACE_SEC;
 
-    if (reason === 'missed_turn') {
-        // Auto-take the missed turn so play continues from that node
-        const nextTurn = turnPoints[p.turnIndex + 1];
-        if (nextTurn) {
-            p.turnIndex++;
-            p.currentDir = nextTurn.dir;
-            p.x = nextTurn.x;
-            p.y = nextTurn.y;
-            p.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
-            p.trail.push({ x: nextTurn.x, y: nextTurn.y });
-        }
-    } else {
-        // Wall crash: snap to last successful turn and resume along correct dir
-        const tp = turnPoints[p.turnIndex];
-        if (tp) {
-            p.x = tp.x;
-            p.y = tp.y;
-            p.currentDir = tp.dir;
-            p.anchor = { x: tp.x, y: tp.y, time: t };
-        }
-    }
+    placePlayerOnTrackAtTime(p, turnPoints, t);
 
     broadcast({
         type: 'lifeUpdate',
@@ -659,7 +683,6 @@ function trySurviveWithLife(p, turnPoints, t, reason) {
         anchor: p.anchor,
         combo: 0
     });
-    // Also surface as a MISS hit for judgment UX / combo break
     broadcast({
         type: 'hit',
         id: p.id,
@@ -933,6 +956,7 @@ wss.on('connection', (ws) => {
                     p.combo = 0;
                     p.maxCombo = 0;
                     p.lives = INITIAL_LIVES;
+                    p.lifeGraceUntil = null;
                     p.x = pts[0].x;
                     p.y = pts[0].y;
                     p.currentDir = pts[0].dir;
@@ -1090,47 +1114,14 @@ wss.on('connection', (ws) => {
                             lives: p.lives
                         });
                     } else {
-                        // Hard miss: consume a life if available and auto-clear the turn; otherwise die
+                        // Hard miss: spend one life and snap onto the track at current song time.
+                        // Do NOT flip into the wrong direction (that caused wall pierce → second life).
                         sharedCombo = 0;
                         p.combo = 0;
-                        if ((p.lives || 0) > 0) {
-                            p.lives -= 1;
-                            // Force the turn so the player stays on the track
-                            p.turnIndex++;
-                            p.currentDir = nextTurn.dir;
-                            p.x = nextTurn.x;
-                            p.y = nextTurn.y;
-                            p.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
-                            p.trail.push({ x: nextTurn.x, y: nextTurn.y });
-                            broadcast({
-                                type: 'lifeUpdate',
-                                id: p.id,
-                                lives: p.lives,
-                                delta: -1,
-                                reason: 'miss',
-                                turnIndex: p.turnIndex,
-                                x: p.x,
-                                y: p.y,
-                                currentDir: p.currentDir,
-                                anchor: p.anchor,
-                                combo: 0
-                            });
-                            broadcast({
-                                type: 'hit',
-                                id,
-                                combo: 0,
-                                score: p.score,
-                                x: p.x,
-                                y: p.y,
-                                judgment: 'MISS',
-                                turnIndex: p.turnIndex,
-                                lives: p.lives,
-                                lifeSaved: true
-                            });
+                        const songT = serverT;
+                        if (trySurviveWithLife(p, turnPoints, songT, 'miss')) {
+                            // survived — trySurviveWithLife already broadcast lifeUpdate + MISS
                         } else {
-                            p.currentDir = newDir;
-                            p.anchor = { x: p.x, y: p.y, time: t };
-                            p.trail.push({ x: p.x, y: p.y });
                             broadcast({
                                 type: 'hit',
                                 id,
@@ -1142,13 +1133,12 @@ wss.on('connection', (ws) => {
                                 turnIndex: p.turnIndex,
                                 lives: 0
                             });
-                            // Immediate death when out of lives on hard miss
                             p.alive = false;
-                            p.deathTime = t;
+                            p.deathTime = songT;
                             broadcast({ type: 'playerDead', id });
                             if (selectedSong) {
                                 const totalTime = turnPoints[turnPoints.length - 1].time || 1;
-                                const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                                const pct = Math.min(100, Math.floor((songT / totalTime) * 100));
                                 recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
                             }
                         }
@@ -1249,6 +1239,7 @@ function updatePhysics() {
                 // Missed turn point
                 const nextTurn = turnPoints[p.turnIndex + 1];
                 const totalTime = turnPoints[turnPoints.length - 1].time;
+                let justLifeSaved = false;
                 if (nextTurn && t > nextTurn.time + 0.45) {
                     if (!trySurviveWithLife(p, turnPoints, t, 'missed_turn')) {
                         p.alive = false;
@@ -1257,11 +1248,19 @@ function updatePhysics() {
                         
                         const pct = Math.min(100, Math.floor((t / totalTime) * 100));
                         recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                    } else {
+                        justLifeSaved = true;
                     }
                 }
                 
-                // Wall crash (only if not finished yet)
-                if (p.alive && !p.finished && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints, p.turnIndex)) {
+                // Wall crash — skip same tick as a life-save (position was just corrected)
+                if (
+                    !justLifeSaved &&
+                    p.alive &&
+                    !p.finished &&
+                    t > 0.5 &&
+                    !isInsideCorridor(p.x, p.y, turnPoints, p.turnIndex)
+                ) {
                     if (!trySurviveWithLife(p, turnPoints, t, 'wall')) {
                         p.alive = false;
                         p.deathTime = t;
