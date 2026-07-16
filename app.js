@@ -78,7 +78,17 @@ let songList = [];
 let selectedSongId = null;
 let loadedTrackData = null;
 let precalculatedTracks = {}; // playerId -> array of points
-let precalculatedPaths = {}; // playerId -> Path2D
+let precalculatedPaths = {}; // playerId -> Path2D (full path; used sparingly)
+// Scratch vectors reused each frame to reduce GC pressure (mid-song freezes)
+const _scratchPos = { x: 0, y: 0 };
+const _scratchPos2 = { x: 0, y: 0 };
+let lastHudScore = null;
+let lastHudCombo = null;
+let lastHudPct = null;
+
+// Prebuilt short click buffers for turn feedback (avoids createOscillator GC storms)
+let feedbackBuffers = null; // { excellent, good, miss } AudioBuffers
+let feedbackBus = null; // shared GainNode
 
 let currentLeaderboard = [];
 let selectedDifficulty = 3; // 1: Easy, 2: Medium, 3: Hard (default)
@@ -181,7 +191,11 @@ function filterSegmentsByDifficultyClient(originalSegments, bpm, difficulty) {
 
 // Judgment Popups System
 let judgmentPopups = [];
+const MAX_JUDGMENT_POPUPS = 12;
 function showJudgmentPopup(text, color, x, y) {
+    if (judgmentPopups.length >= MAX_JUDGMENT_POPUPS) {
+        judgmentPopups.shift();
+    }
     judgmentPopups.push({
         text,
         color,
@@ -190,6 +204,17 @@ function showJudgmentPopup(text, color, x, y) {
         createdAt: Date.now(),
         duration: 800 // 800ms
     });
+}
+
+/** Compact expired popups in-place (no Array.filter allocation every frame). */
+function pruneJudgmentPopups(nowMs) {
+    let w = 0;
+    for (let i = 0; i < judgmentPopups.length; i++) {
+        if (nowMs - judgmentPopups[i].createdAt < judgmentPopups[i].duration) {
+            judgmentPopups[w++] = judgmentPopups[i];
+        }
+    }
+    judgmentPopups.length = w;
 }
 function getJudgmentColor(judgment) {
     switch (judgment) {
@@ -222,21 +247,27 @@ function snapToNote(freq) {
     return closest;
 }
 
+// Reused autocorrelation buffer to avoid allocating Float32Array per note during pitch analysis
+const _pitchCorr = new Float32Array(1024);
+
 function detectPitch(buffer, time) {
     const sampleRate = buffer.sampleRate;
     const channelData = buffer.getChannelData(0);
     const startSample = Math.floor(time * sampleRate);
-    const fftSize = 2048;
+    // Smaller window + coarser lag step: enough for musical pitch, far cheaper on long charts
+    const fftSize = 1024;
+    const half = fftSize >> 1;
     
     if (startSample < 0 || startSample + fftSize > channelData.length) {
         return 440;
     }
     
     const signal = channelData.subarray(startSample, startSample + fftSize);
-    let r = new Float32Array(fftSize);
-    for (let lag = 0; lag < fftSize / 2; lag++) {
+    const r = _pitchCorr;
+    for (let lag = 0; lag < half; lag++) {
         let sum = 0;
-        for (let i = 0; i < fftSize / 2; i++) {
+        // Step by 2: ~2x faster, still stable for 200–1200 Hz
+        for (let i = 0; i < half; i += 2) {
             sum += signal[i] * signal[i + lag];
         }
         r[lag] = sum;
@@ -244,8 +275,8 @@ function detectPitch(buffer, time) {
     
     let threshold = 0.9 * r[0];
     let peakLag = -1;
-    let searchStart = 0;
-    for (let lag = 1; lag < fftSize / 2; lag++) {
+    let searchStart = 1;
+    for (let lag = 1; lag < half; lag++) {
         if (r[lag] < threshold) {
             searchStart = lag;
             break;
@@ -253,7 +284,8 @@ function detectPitch(buffer, time) {
     }
     
     let maxVal = -1;
-    for (let lag = searchStart; lag < fftSize / 2; lag++) {
+    const searchEnd = half - 1;
+    for (let lag = searchStart; lag < searchEnd; lag++) {
         if (r[lag] > maxVal && r[lag] > r[lag - 1] && r[lag] > r[lag + 1]) {
             maxVal = r[lag];
             peakLag = lag;
@@ -267,6 +299,23 @@ function detectPitch(buffer, time) {
         }
     }
     return 440;
+}
+
+/** Yield to the browser so pitch analysis doesn't freeze the UI on long maps. */
+function yieldToMain() {
+    return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function precalculateNotePitches(segments, audioBuffer) {
+    const pitches = new Array(segments.length);
+    const CHUNK = 24;
+    for (let i = 0; i < segments.length; i++) {
+        pitches[i] = snapToNote(detectPitch(audioBuffer, segments[i].time));
+        if (i > 0 && (i % CHUNK) === 0) {
+            await yieldToMain();
+        }
+    }
+    return pitches;
 }
 
 
@@ -909,20 +958,20 @@ async function downloadSongData(songId) {
             musicVolumeBoost = 1.0;
         }
 
-        // 2. Precalculate note pitches matching melody at turn points
+        // 2. Precalculate note pitches (chunked async — full-song sync analysis caused multi-second freezes)
         try {
             precalculatedPitches = [];
-            if (loadedTrackData && loadedTrackData.segments) {
-                for (let i = 0; i < loadedTrackData.segments.length; i++) {
-                    const t = loadedTrackData.segments[i].time;
-                    const rawPitch = detectPitch(loadedAudioBuffer, t);
-                    const snapped = snapToNote(rawPitch);
-                    precalculatedPitches.push(snapped);
-                }
+            if (loadedTrackData && loadedTrackData.segments && loadedTrackData.segments.length) {
+                downloadStatus.textContent = `Analyzing pitches...`;
+                precalculatedPitches = await precalculateNotePitches(loadedTrackData.segments, loadedAudioBuffer);
             }
         } catch (err) {
             console.error("Failed to precalculate pitches:", err);
+            precalculatedPitches = [];
         }
+
+        // Warm turn-feedback buffers while still in lobby
+        ensureFeedbackAudio();
         
         downloadStatus.textContent = `Ready to play!`;
         updateStartButtonText();
@@ -1113,36 +1162,88 @@ function unlockAudio() {
     }
 }
 
+function ensureFeedbackAudio() {
+    if (!audioContext) return false;
+    if (!feedbackBus) {
+        feedbackBus = audioContext.createGain();
+        feedbackBus.gain.value = 1.0;
+        feedbackBus.connect(audioContext.destination);
+    }
+    if (feedbackBuffers) return true;
+
+    // Offline-render short triangle blips once — replay via BufferSource (cheaper GC profile than Oscillator spam)
+    const makeBlip = (freq, peakGain, durationSec) => {
+        const sr = audioContext.sampleRate;
+        const n = Math.max(1, Math.floor(sr * durationSec));
+        const buf = audioContext.createBuffer(1, n, sr);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < n; i++) {
+            const t = i / sr;
+            const env = Math.exp(-t * 28) * peakGain;
+            // triangle-ish wave
+            const phase = (t * freq) % 1;
+            const tri = phase < 0.5 ? (phase * 4 - 1) : (3 - phase * 4);
+            data[i] = tri * env;
+        }
+        return buf;
+    };
+
+    feedbackBuffers = {
+        excellent: makeBlip(660, 0.45, 0.14),
+        good: makeBlip(440, 0.35, 0.14),
+        soft: makeBlip(330, 0.2, 0.14),
+        echo: makeBlip(520, 0.15, 0.16)
+    };
+    return true;
+}
+
+function playBufferedBlip(buffer, playbackRate = 1.0, gain = 1.0) {
+    if (!ensureFeedbackAudio() || !buffer) return;
+    const now = audioContext.currentTime;
+    const src = audioContext.createBufferSource();
+    const env = audioContext.createGain();
+    src.buffer = buffer;
+    src.playbackRate.value = playbackRate;
+    env.gain.value = gain;
+    src.connect(env);
+    env.connect(feedbackBus);
+    src.start(now);
+    src.stop(now + buffer.duration / Math.max(0.01, playbackRate) + 0.02);
+    src.onended = () => {
+        try { src.disconnect(); } catch (e) {}
+        try { env.disconnect(); } catch (e) {}
+    };
+}
+
 function playLocalTurnFeedback(judgment, turnIndex) {
     if (!audioContext) return;
-    const now = audioContext.currentTime;
-    const osc = audioContext.createOscillator();
-    const env = audioContext.createGain();
-    
-    osc.connect(env); env.connect(audioContext.destination);
-    osc.type = 'triangle';
-    
-    // Harmonization: match the melody note at this turn index
-    const baseFreq = (typeof turnIndex === 'number' && precalculatedPitches[turnIndex]) 
-        ? precalculatedPitches[turnIndex] 
-        : 440; // Default A4 fallback
-    
-    let freq = baseFreq;
+
+    // Pitch via playbackRate against a 440Hz-ish base buffer, matching melody when available
+    const baseFreq = (typeof turnIndex === 'number' && precalculatedPitches[turnIndex])
+        ? precalculatedPitches[turnIndex]
+        : 440;
+
+    let kind = 'good';
+    let targetFreq = baseFreq;
+    let gain = 0.9;
     if (judgment === 'excellent') {
-        freq = baseFreq * 1.5; // Perfect fifth above - bright and harmonious
-        env.gain.value = 0.45;
+        kind = 'excellent';
+        targetFreq = baseFreq * 1.5;
+        gain = 1.0;
     } else if (judgment === 'Good') {
-        freq = baseFreq; // Unison - matches melody root note
-        env.gain.value = 0.35;
+        kind = 'good';
+        targetFreq = baseFreq;
+        gain = 0.85;
     } else {
-        freq = baseFreq * 0.75; // Perfect fourth below - lower, signals error musically
-        env.gain.value = 0.2;
+        kind = 'soft';
+        targetFreq = baseFreq * 0.75;
+        gain = 0.7;
     }
-    
-    osc.frequency.setValueAtTime(freq, now);
-    env.gain.setValueAtTime(env.gain.value, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-    osc.start(now); osc.stop(now + 0.14);
+
+    if (!ensureFeedbackAudio()) return;
+    const refFreq = kind === 'excellent' ? 660 : (kind === 'soft' ? 330 : 440);
+    const rate = Math.max(0.5, Math.min(2.0, targetFreq / refFreq));
+    playBufferedBlip(feedbackBuffers[kind], rate, gain);
 }
 
 // Handle tab visibility changes to prevent stale UI state when waking up
@@ -1155,15 +1256,8 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function playEcho() {
-    if (!audioContext) return;
-    const now = audioContext.currentTime;
-    const osc = audioContext.createOscillator();
-    const env = audioContext.createGain();
-    osc.connect(env); env.connect(audioContext.destination);
-    osc.type = 'sine'; osc.frequency.value = 520;
-    env.gain.value = 0.15;
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-    osc.start(now); osc.stop(now + 0.16);
+    if (!ensureFeedbackAudio()) return;
+    playBufferedBlip(feedbackBuffers.echo, 1.0, 1.0);
 }
 
 function playCountdownTick(time, pitch) {
@@ -1242,6 +1336,10 @@ function handleStartGame(startDelayMs, serverSegments) {
     // Precalculate paths
     precalculatedTracks = {};
     precalculatedPaths = {};
+    lastHudScore = null;
+    lastHudCombo = null;
+    lastHudPct = null;
+    judgmentPopups.length = 0;
     for (const id in players) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
@@ -1265,6 +1363,9 @@ function handleStartGame(startDelayMs, serverSegments) {
         p.anchor = { x: p.x, y: p.y, time: 0.0 };
         p.currentDir = precalculatedTracks[id][0].dir;
     }
+
+    // Warm feedback audio so first hits don't allocate offline-render work mid-song
+    ensureFeedbackAudio();
     
     zoomStartTime = audioContext.currentTime;
     gameStartTime = zoomStartTime + (startDelayMs / 1000);
@@ -1326,6 +1427,7 @@ function handleStartSpectating(elapsedT, serverSegments) {
     
     precalculatedTracks = {};
     precalculatedPaths = {};
+    judgmentPopups.length = 0;
     for (const id in players) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
@@ -1338,6 +1440,8 @@ function handleStartSpectating(elapsedT, serverSegments) {
         }
         precalculatedPaths[id] = path;
     }
+
+    ensureFeedbackAudio();
     
     if (audioSource) {
         try { audioSource.stop(); } catch(e) {}
@@ -1471,10 +1575,20 @@ function showResultsScreen(isClear) {
 }
 
 function updateHUD(t) {
-    scoreDisplay.textContent = `Score: ${score}`;
-    comboDisplay.textContent = `Combo: ${combo}`;
+    // Only touch the DOM when values change — textContent writes force style/layout work
+    if (score !== lastHudScore) {
+        lastHudScore = score;
+        scoreDisplay.textContent = `Score: ${score}`;
+    }
+    if (combo !== lastHudCombo) {
+        lastHudCombo = combo;
+        comboDisplay.textContent = `Combo: ${combo}`;
+    }
     const pct = totalDuration > 0 ? Math.min(100, Math.floor((Math.max(0, t) / totalDuration) * 100)) : 0;
-    progressDisplay.textContent = `${pct}%`;
+    if (pct !== lastHudPct) {
+        lastHudPct = pct;
+        progressDisplay.textContent = `${pct}%`;
+    }
 }
 
 function handleTap() {
@@ -1582,19 +1696,69 @@ startGameBtn.addEventListener('click', () => {
 });
 
 // --- Interpolation Calculation ---
-function getSmoothPlayerPosition(p, t) {
+/**
+ * Write smooth position into `out` (reused scratch object) to avoid per-frame allocations.
+ * Falls back to allocating only if out is omitted.
+ */
+function getSmoothPlayerPosition(p, t, out) {
+    const result = out || { x: 0, y: 0 };
     if (!p.alive || p.finished || t < 0) {
-        return { x: p.x, y: p.y };
+        result.x = p.x;
+        result.y = p.y;
+        return result;
     }
     
     const elapsed = t - p.anchor.time;
     const dist = elapsed * SPEED_PER_SEC;
     const dv = DIR_VECS[p.currentDir];
     
-    return {
-        x: p.anchor.x + dv.x * dist,
-        y: p.anchor.y + dv.y * dist
-    };
+    result.x = p.anchor.x + dv.x * dist;
+    result.y = p.anchor.y + dv.y * dist;
+    return result;
+}
+
+/** Binary search: largest i with pts[i].time <= t */
+function findPathIndexAtTime(pts, t) {
+    if (!pts || pts.length === 0) return 0;
+    let lo = 0, hi = pts.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (pts[mid].time <= t) lo = mid;
+        else hi = mid - 1;
+    }
+    return lo;
+}
+
+/**
+ * Stroke only nearby corridor segments (viewport window).
+ * Full-path Path2D stroke of 500+ points × 3 layers every frame is a primary hitch source.
+ */
+function strokeCorridorWindow(pts, fromIdx, toIdx) {
+    if (!pts || pts.length < 2) return;
+    const start = Math.max(0, fromIdx);
+    const end = Math.min(pts.length - 1, toIdx);
+    if (end <= start) return;
+
+    ctx.beginPath();
+    ctx.moveTo(pts[start].x, pts[start].y);
+    for (let i = start + 1; i <= end; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+    }
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.lineWidth = WALL_HALF_WIDTH * 2;
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.stroke();
+
+    ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
+    ctx.strokeStyle = '#2a2a4a';
+    ctx.stroke();
+
+    ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
+    ctx.strokeStyle = '#12122a';
+    ctx.stroke();
 }
 
 function pointToSegmentDist(px, py, x1, y1, x2, y2) {
@@ -1653,12 +1817,17 @@ function gameLoop() {
                 editorCurrentTime = maxDur;
             }
             
-            // Auto-play turns feedback sound
-            editorTracks.forEach((tp, idx) => {
-                if (idx > 0 && tp.time > lastCheckedEditorTime && tp.time <= editorCurrentTime) {
-                    playLocalTurnFeedback('excellent', idx);
+            // Auto-play turns feedback sound (only notes crossed since last frame)
+            if (editorTracks.length > 1 && editorCurrentTime > lastCheckedEditorTime) {
+                const fromIdx = findPathIndexAtTime(editorTracks, lastCheckedEditorTime) + 1;
+                const toIdx = findPathIndexAtTime(editorTracks, editorCurrentTime);
+                for (let idx = Math.max(1, fromIdx); idx <= toIdx; idx++) {
+                    const tp = editorTracks[idx];
+                    if (tp.time > lastCheckedEditorTime && tp.time <= editorCurrentTime) {
+                        playLocalTurnFeedback('excellent', idx);
+                    }
                 }
-            });
+            }
             
             lastCheckedEditorTime = editorCurrentTime;
             
@@ -1683,11 +1852,13 @@ function gameLoop() {
         }
     }
     
-    let localPos = { x: 0, y: 0 };
     const localP = players[localId];
+    let camX = 0, camY = 0;
     
     if (localP && !localP.spectator && localP.alive) {
-        localPos = getSmoothPlayerPosition(localP, t);
+        getSmoothPlayerPosition(localP, t, _scratchPos);
+        camX = _scratchPos.x;
+        camY = _scratchPos.y;
     } else {
         let followTarget = null;
         for (const id in players) {
@@ -1698,17 +1869,20 @@ function gameLoop() {
             }
         }
         if (followTarget) {
-            localPos = getSmoothPlayerPosition(followTarget, t);
+            getSmoothPlayerPosition(followTarget, t, _scratchPos);
+            camX = _scratchPos.x;
+            camY = _scratchPos.y;
         } else {
-            const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : { x: 0, y: 0 };
-            localPos = { x: startPt.x, y: startPt.y };
+            const startPt = precalculatedTracks[localId] ? precalculatedTracks[localId][0] : null;
+            camX = startPt ? startPt.x : 0;
+            camY = startPt ? startPt.y : 0;
         }
     }
     
     if (gameState === 'playing') {
         updateHUD(t);
     }
-    render(t, localPos.x, localPos.y);
+    render(t, camX, camY);
 }
 
 // --- Drawing ---
@@ -1750,87 +1924,77 @@ function render(t, camX, camY) {
     ctx.scale(camScale, camScale);
     ctx.translate(-camX, -camY);
     
+    // How far ahead/behind of the player to keep corridor geometry drawn
+    const CORRIDOR_LOOKBEHIND = 24;
+    const CORRIDOR_LOOKAHEAD = 48;
+    // Trail is expensive late-game if rebuilt fully; only stroke recent segment window
+    const TRAIL_LOOKBEHIND = 80;
+
     if (isEditorMode) {
-        if (editorPath2D) {
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2;
-            ctx.strokeStyle = '#1a1a2e';
-            ctx.stroke(editorPath2D);
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
-            ctx.strokeStyle = '#2a2a4a';
-            ctx.stroke(editorPath2D);
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
-            ctx.strokeStyle = '#12122a';
-            ctx.stroke(editorPath2D);
+        // Editor: windowed stroke around playhead (editor tracks can also grow large)
+        if (editorTracks && editorTracks.length > 1) {
+            const eIdx = findPathIndexAtTime(editorTracks, editorCurrentTime);
+            strokeCorridorWindow(editorTracks, eIdx - CORRIDOR_LOOKBEHIND, eIdx + CORRIDOR_LOOKAHEAD);
         }
     } else {
-        // 1. Draw corridors
-        for (const pid in players) {
-            const path = precalculatedPaths[pid];
-            if (!path) continue;
-            
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2;
-            ctx.strokeStyle = '#1a1a2e';
-            ctx.stroke(path);
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2 + 4;
-            ctx.strokeStyle = '#2a2a4a';
-            ctx.stroke(path);
-            
-            ctx.lineWidth = WALL_HALF_WIDTH * 2 - 4;
-            ctx.strokeStyle = '#12122a';
-            ctx.stroke(path);
+        // 1. Draw corridors — only near the local (or followed) player. Full Path2D stroke
+        // of 500+ points × 3 layers × N players every frame causes multi-frame hitches.
+        let focusPts = precalculatedTracks[localId];
+        if (!focusPts) {
+            for (const pid in precalculatedTracks) {
+                focusPts = precalculatedTracks[pid];
+                break;
+            }
+        }
+        if (focusPts) {
+            const focusIdx = findPathIndexAtTime(focusPts, t);
+            for (const pid in players) {
+                const pts = precalculatedTracks[pid];
+                if (!pts) continue;
+                strokeCorridorWindow(pts, focusIdx - CORRIDOR_LOOKBEHIND, focusIdx + CORRIDOR_LOOKAHEAD);
+            }
         }
     }
     
-    // 2. Draw turn diamonds
+    // 2. Draw turn diamonds (viewport cull + no shadowBlur — shadows are a top hitch cost)
     if (isEditorMode) {
         const margin = (canvas.width / 2) / camScale + 100;
-        for (let i = 1; i < editorTracks.length; i++) {
+        const eIdx = findPathIndexAtTime(editorTracks, editorCurrentTime);
+        const dStart = Math.max(1, eIdx - CORRIDOR_LOOKBEHIND);
+        const dEnd = Math.min(editorTracks.length - 1, eIdx + CORRIDOR_LOOKAHEAD);
+        ctx.fillStyle = '#ffeb3b';
+        for (let i = dStart; i <= dEnd; i++) {
             const tp = editorTracks[i];
             if (Math.abs(tp.x - camX) > margin || Math.abs(tp.y - camY) > margin) continue;
             
             const passed = editorCurrentTime >= tp.time;
+            const sz = passed ? 5 : 7;
+            // Axis-aligned diamond via two triangles / rotated rect without save/restore when possible
             ctx.save();
             ctx.translate(tp.x, tp.y);
             ctx.rotate(Math.PI / 4);
-            const sz = passed ? 5 : 7;
             ctx.fillStyle = passed ? '#333' : '#ffeb3b';
-            if (!passed) {
-                ctx.shadowColor = '#ffeb3b';
-                ctx.shadowBlur = 8;
-            }
             ctx.fillRect(-sz, -sz, sz * 2, sz * 2);
             ctx.restore();
         }
     } else if (loadedTrackData && precalculatedTracks[localId]) {
         const pts = precalculatedTracks[localId];
         const localP = players[localId];
-        
         const margin = (canvas.width / 2) / camScale + 100;
+        const focusIdx = findPathIndexAtTime(pts, t);
+        const dStart = Math.max(1, focusIdx - CORRIDOR_LOOKBEHIND);
+        const dEnd = Math.min(pts.length - 1, focusIdx + CORRIDOR_LOOKAHEAD);
         
-        for (let i = 1; i < pts.length; i++) {
+        for (let i = dStart; i <= dEnd; i++) {
             const tp = pts[i];
-            // Viewport culling
             if (Math.abs(tp.x - camX) > margin || Math.abs(tp.y - camY) > margin) continue;
             
             const collected = localP && i <= localP.turnIndex;
+            const sz = collected ? 5 : 7;
             ctx.save();
             ctx.translate(tp.x, tp.y);
             ctx.rotate(Math.PI / 4);
-            const sz = collected ? 5 : 7;
             ctx.fillStyle = collected ? '#333' : '#ffeb3b';
-            if (!collected) {
-                ctx.shadowColor = '#ffeb3b';
-                ctx.shadowBlur = 8;
-            }
             ctx.fillRect(-sz, -sz, sz * 2, sz * 2);
             ctx.restore();
         }
@@ -1840,25 +2004,22 @@ function render(t, camX, camY) {
     if (isEditorMode) {
         const editorPos = getEditorPositionAtTime(editorCurrentTime);
         ctx.fillStyle = '#00e676';
-        ctx.shadowColor = '#00e676';
-        ctx.shadowBlur = 25;
+        // Soft glow via larger translucent circle instead of shadowBlur
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.arc(editorPos.x, editorPos.y, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
         ctx.beginPath();
         ctx.arc(editorPos.x, editorPos.y, 9, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
         
-        // Draw player name above the circle
-        ctx.save();
         ctx.fillStyle = '#fff';
         ctx.font = '700 12px Outfit';
         ctx.textAlign = 'center';
-        ctx.shadowColor = '#000';
-        ctx.shadowBlur = 4;
         ctx.fillText("YOU", editorPos.x, editorPos.y - 15);
-        ctx.restore();
     } else {
         const localP = players[localId];
-        const localPathData = precalculatedTracks[localId];
         let refP = (localP && !localP.spectator) ? localP : null;
         if (!refP) {
             for (const id in players) {
@@ -1870,13 +2031,16 @@ function render(t, camX, camY) {
             }
         }
         const refPathData = refP ? precalculatedTracks[refP.id] : null;
+        if (refP) {
+            getSmoothPlayerPosition(refP, t, _scratchPos2);
+        }
 
         for (const id in players) {
             const p = players[id];
             const pathData = precalculatedTracks[id];
             if (!pathData) continue;
             
-            let pos;
+            let posX, posY;
             let pTurnIndex = p.turnIndex || 0;
             let opacity = id === localId ? 0.9 : 0.5;
             let dotOpacity = 1.0;
@@ -1892,48 +2056,43 @@ function render(t, camX, camY) {
                 dotOpacity = ratio;
             }
 
+            let diffX = 0, diffY = 0;
             if (id === localId) {
-                pos = getSmoothPlayerPosition(p, t);
+                getSmoothPlayerPosition(p, t, _scratchPos);
+                posX = _scratchPos.x;
+                posY = _scratchPos.y;
                 pTurnIndex = p.turnIndex || 0;
+            } else if (refP && refPathData) {
+                diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
+                diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
+                posX = _scratchPos2.x + diffX;
+                posY = _scratchPos2.y + diffY;
+                pTurnIndex = refP.turnIndex || 0;
             } else {
-                // Replicate reference player's position and trail, offset by spawn index difference
-                if (refP && refPathData) {
-                    const diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
-                    const diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
-                    const refSmooth = getSmoothPlayerPosition(refP, t);
-                    pos = { x: refSmooth.x + diffX, y: refSmooth.y + diffY };
-                    pTurnIndex = refP.turnIndex || 0;
-                } else {
-                    pos = getSmoothPlayerPosition(p, t);
-                    pTurnIndex = p.turnIndex || 0;
-                }
+                getSmoothPlayerPosition(p, t, _scratchPos);
+                posX = _scratchPos.x;
+                posY = _scratchPos.y;
+                pTurnIndex = p.turnIndex || 0;
             }
             
-            if (pathData && pathData.length > 0) {
+            // Trail: only recent window + current head (avoids O(totalNotes) every frame late-song)
+            if (pathData.length > 0) {
+                const refPath = (id !== localId && refP && refPathData) ? refPathData : pathData;
+                const refTurnIdx = (id !== localId && refP) ? (refP.turnIndex || 0) : pTurnIndex;
+                const limit = Math.min(refPath.length - 1, refTurnIdx);
+                const trailStart = Math.max(0, limit - TRAIL_LOOKBEHIND);
+
                 ctx.strokeStyle = p.color;
                 ctx.lineWidth = id === localId ? 6 : 4;
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
                 ctx.globalAlpha = opacity;
                 ctx.beginPath();
-                
-                let diffX = 0, diffY = 0;
-                let refPath = pathData;
-                let refTurnIdx = pTurnIndex;
-                
-                if (id !== localId && refP && refPathData) {
-                    diffX = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].x - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].x;
-                    diffY = SPAWN_OFFSETS[p.spawnIndex % SPAWN_OFFSETS.length].y - SPAWN_OFFSETS[refP.spawnIndex % SPAWN_OFFSETS.length].y;
-                    refPath = refPathData;
-                    refTurnIdx = refP.turnIndex || 0;
-                }
-                
-                ctx.moveTo(refPath[0].x + diffX, refPath[0].y + diffY);
-                const limit = Math.min(refPath.length - 1, refTurnIdx);
-                for (let i = 1; i <= limit; i++) {
+                ctx.moveTo(refPath[trailStart].x + diffX, refPath[trailStart].y + diffY);
+                for (let i = trailStart + 1; i <= limit; i++) {
                     ctx.lineTo(refPath[i].x + diffX, refPath[i].y + diffY);
                 }
-                ctx.lineTo(pos.x, pos.y);
+                ctx.lineTo(posX, posY);
                 ctx.stroke();
                 ctx.globalAlpha = 1.0;
             }
@@ -1941,25 +2100,26 @@ function render(t, camX, camY) {
             if (p.alive || opacity > 0) {
                 ctx.globalAlpha = dotOpacity;
                 ctx.fillStyle = p.alive ? p.color : '#ff5252';
-                ctx.shadowColor = p.color;
-                ctx.shadowBlur = id === localId ? (p.alive ? 25 : 0) : (p.alive ? 10 : 0);
+                // Glow without shadowBlur (major main-thread cost on some GPUs/drivers)
+                if (id === localId && p.alive) {
+                    ctx.globalAlpha = dotOpacity * 0.35;
+                    ctx.beginPath();
+                    ctx.arc(posX, posY, 18, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.globalAlpha = dotOpacity;
+                }
                 ctx.beginPath();
-                ctx.arc(pos.x, pos.y, id === localId ? 9 : 6, 0, Math.PI * 2);
+                ctx.arc(posX, posY, id === localId ? 9 : 6, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.shadowBlur = 0;
                 ctx.globalAlpha = 1.0;
                 
-                // Draw player name above the circle
                 if (p.name) {
-                    ctx.save();
                     ctx.globalAlpha = dotOpacity;
                     ctx.fillStyle = '#fff';
                     ctx.font = '700 12px Outfit';
                     ctx.textAlign = 'center';
-                    ctx.shadowColor = '#000';
-                    ctx.shadowBlur = 4;
-                    ctx.fillText(p.name, pos.x, pos.y - 15);
-                    ctx.restore();
+                    ctx.fillText(p.name, posX, posY - 15);
+                    ctx.globalAlpha = 1.0;
                 }
             } else {
                 ctx.fillStyle = '#ff5252';
@@ -1967,33 +2127,32 @@ function render(t, camX, camY) {
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.globalAlpha = 1.0;
             }
         }
     }
-    // Render judgment popups (in world space)
+
+    // Judgment popups (in world space) — in-place prune, no filter() allocation
     const nowTimeMs = Date.now();
-    judgmentPopups = judgmentPopups.filter(pop => nowTimeMs - pop.createdAt < pop.duration);
+    pruneJudgmentPopups(nowTimeMs);
     
-    judgmentPopups.forEach(pop => {
+    for (let pi = 0; pi < judgmentPopups.length; pi++) {
+        const pop = judgmentPopups[pi];
         const elapsed = nowTimeMs - pop.createdAt;
         const progress = elapsed / pop.duration;
-        
-        // Float up (y gets smaller because up is negative y in canvas)
-        const currentY = pop.y - progress * 50; 
+        const currentY = pop.y - progress * 50;
         
         ctx.save();
         ctx.translate(pop.x, currentY);
         
-        // Bounce scale effect at beginning
         let scale = 1.0;
         if (progress < 0.15) {
             scale = 1.0 + (0.15 - progress) * 2.5; 
         } else if (progress > 0.6) {
-            // Shrink/fade towards the end
             scale = 1.0 - (progress - 0.6) * 2.5;
         }
         scale = Math.max(0, scale);
-        ctx.scale(scale / camScale, scale / camScale); // Counteract camera scale so text size remains constant on screen
+        ctx.scale(scale / camScale, scale / camScale);
         
         const alpha = Math.max(0, 1 - progress);
         ctx.globalAlpha = alpha;
@@ -2002,21 +2161,15 @@ function render(t, camX, camY) {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         
-        // Text shadow/glow
-        ctx.shadowColor = pop.color;
-        ctx.shadowBlur = 10;
-        
-        // Draw outline
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 4;
         ctx.strokeText(pop.text, 0, 0);
         
-        // Fill text
         ctx.fillStyle = pop.color;
         ctx.fillText(pop.text, 0, 0);
         
         ctx.restore();
-    });
+    }
     
     ctx.restore();
 }
