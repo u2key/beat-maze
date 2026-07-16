@@ -24,6 +24,7 @@ const resultsCloseBtn = document.getElementById('results-close-btn');
 
 const scoreDisplay = document.getElementById('score-display');
 const comboDisplay = document.getElementById('combo-display');
+const livesDisplay = document.getElementById('lives-display');
 const progressDisplay = document.getElementById('progress-display');
 const finalScoreEl = document.getElementById('final-score');
 const playersList = document.getElementById('players-list');
@@ -84,6 +85,7 @@ const _scratchPos = { x: 0, y: 0 };
 const _scratchPos2 = { x: 0, y: 0 };
 let lastHudScore = null;
 let lastHudCombo = null;
+let lastHudLives = null;
 let lastHudPct = null;
 
 // Prebuilt short click buffers for turn feedback (avoids createOscillator GC storms)
@@ -101,6 +103,9 @@ let gameState = 'idle'; // idle | starting | playing | dead
 let alive = true;
 let score = 0;
 let combo = 0;
+let lives = 5;
+const INITIAL_LIVES = 5;
+const COMBO_PER_LIFE = 50;
 let totalDuration = 0;
 let judgmentCounts = { excellent: 0, Good: 0, Fast: 0, Late: 0, MISS: 0 };
 let maxCombo = 0;
@@ -445,8 +450,43 @@ function initWebSocket() {
                     
                 case 'startGame': {
                     currentPlaybackRate = clampPlaybackRate(data.playbackRate == null ? currentPlaybackRate : data.playbackRate);
+                    if (typeof data.initialLives === 'number') {
+                        lives = data.initialLives;
+                    } else {
+                        lives = INITIAL_LIVES;
+                    }
                     const adjustedDelay = Math.max(0, data.startDelay - latency);
                     handleStartGame(adjustedDelay, data.segments);
+                    break;
+                }
+
+                case 'lifeUpdate': {
+                    if (players[data.id]) {
+                        players[data.id].lives = data.lives;
+                        if (data.turnIndex !== undefined) players[data.id].turnIndex = data.turnIndex;
+                        if (data.x !== undefined) players[data.id].x = data.x;
+                        if (data.y !== undefined) players[data.id].y = data.y;
+                        if (data.currentDir !== undefined) players[data.id].currentDir = data.currentDir;
+                        if (data.anchor) players[data.id].anchor = data.anchor;
+                        if (data.combo !== undefined) players[data.id].combo = data.combo;
+                    }
+                    if (data.id === localId) {
+                        lives = data.lives;
+                        combo = data.combo !== undefined ? data.combo : combo;
+                        localPredictionActive = false;
+                        const localP = players[localId];
+                        if (localP) {
+                            localP.lives = lives;
+                            localP.combo = combo;
+                        }
+                        updateHUD(getSongTime());
+                        // Miss losses show via hit MISS popup; only celebrate life gains here
+                        if (data.delta > 0) {
+                            const px = localP ? localP.x : 0;
+                            const py = localP ? localP.y : 0;
+                            showJudgmentPopup('LIFE +1', '#ff80ab', px, py);
+                        }
+                    }
                     break;
                 }
                 
@@ -497,10 +537,36 @@ function initWebSocket() {
                 case 'hit': {
                     const judgment = data.judgment;
                     if (data.id === localId) {
+                        if (typeof data.lives === 'number') {
+                            lives = data.lives;
+                        }
                         if (judgment === 'MISS') {
                             localPredictionActive = false;
-                            showJudgmentPopup('MISS', getJudgmentColor('MISS'), data.x, data.y);
+                            combo = 0;
+                            showJudgmentPopup(
+                                data.lifeSaved ? 'MISS (-1❤)' : 'MISS',
+                                getJudgmentColor('MISS'),
+                                data.x,
+                                data.y
+                            );
                             judgmentCounts.MISS++;
+                            const localP = players[localId];
+                            if (localP) {
+                                localP.combo = 0;
+                                localP.lives = lives;
+                                if (data.turnIndex !== undefined) {
+                                    localP.turnIndex = data.turnIndex;
+                                    const pts = precalculatedTracks[localId];
+                                    if (pts && pts[data.turnIndex]) {
+                                        const tp = pts[data.turnIndex];
+                                        localP.x = tp.x;
+                                        localP.y = tp.y;
+                                        localP.anchor = { x: tp.x, y: tp.y, time: tp.time };
+                                        localP.currentDir = tp.dir;
+                                    }
+                                }
+                            }
+                            updateHUD(getSongTime());
                         } else {
                             playLocalTurnFeedback(judgment, data.turnIndex);
                             showJudgmentPopup(judgment, getJudgmentColor(judgment), data.x, data.y);
@@ -520,6 +586,7 @@ function initWebSocket() {
                             if (localP) {
                                 localP.score = data.score;
                                 localP.combo = data.combo;
+                                localP.lives = lives;
                                 localP.turnIndex = data.turnIndex;
                                 const pts = precalculatedTracks[localId];
                                 if (pts && pts[data.turnIndex]) {
@@ -540,12 +607,16 @@ function initWebSocket() {
                                     combo: combo
                                 }));
                             }
+                            updateHUD(getSongTime());
                         }
                     } else {
                         // Other player hit
                         if (players[data.id]) {
                             players[data.id].score = data.score;
                             players[data.id].combo = data.combo;
+                            if (typeof data.lives === 'number') {
+                                players[data.id].lives = data.lives;
+                            }
                             // Only update turnIndex if defined (MISS doesn't include it)
                             if (data.turnIndex !== undefined) {
                                 players[data.id].turnIndex = data.turnIndex;
@@ -1324,9 +1395,10 @@ function handleStartGame(startDelayMs, serverSegments) {
     score = 0;
     combo = 0;
     maxCombo = 0;
+    if (typeof lives !== 'number' || lives <= 0) lives = INITIAL_LIVES;
+    // startGame handler may have set lives already; keep that value
     finished = false;
     judgmentCounts = { excellent: 0, Good: 0, Fast: 0, Late: 0, MISS: 0 };
-    updateHUD(0);
     notesHitCount = 0;
     
     if (serverSegments && serverSegments.length) {
@@ -1338,8 +1410,10 @@ function handleStartGame(startDelayMs, serverSegments) {
     precalculatedPaths = {};
     lastHudScore = null;
     lastHudCombo = null;
+    lastHudLives = null;
     lastHudPct = null;
     judgmentPopups.length = 0;
+    updateHUD(0);
     for (const id in players) {
         const p = players[id];
         precalculatedTracks[id] = precalculatePathPoints(serverSegments, p.spawnIndex);
@@ -1355,6 +1429,7 @@ function handleStartGame(startDelayMs, serverSegments) {
         p.alive = !p.spectator;
         p.score = 0;
         p.combo = 0;
+        p.lives = p.spectator ? 0 : lives;
         p.turnIndex = 0;
         p.finished = false;
         p.x = precalculatedTracks[id][0].x;
@@ -1574,6 +1649,14 @@ function showResultsScreen(isClear) {
     resultsOverlay.style.display = 'flex';
 }
 
+function formatLivesHud(n) {
+    const count = Math.max(0, n | 0);
+    if (count <= 8) {
+        return '❤'.repeat(count || 0) + (count === 0 ? ' × 0' : ` × ${count}`);
+    }
+    return `❤ × ${count}`;
+}
+
 function updateHUD(t) {
     // Only touch the DOM when values change — textContent writes force style/layout work
     if (score !== lastHudScore) {
@@ -1583,6 +1666,10 @@ function updateHUD(t) {
     if (combo !== lastHudCombo) {
         lastHudCombo = combo;
         comboDisplay.textContent = `Combo: ${combo}`;
+    }
+    if (lives !== lastHudLives) {
+        lastHudLives = lives;
+        if (livesDisplay) livesDisplay.textContent = formatLivesHud(lives);
     }
     const pct = totalDuration > 0 ? Math.min(100, Math.floor((Math.max(0, t) / totalDuration) * 100)) : 0;
     if (pct !== lastHudPct) {

@@ -589,8 +589,90 @@ let selectedDifficulty = 3; // 1: Easy (★), 2: Medium (★★), 3: Hard (★�
 let gameEndTimeout = null;
 let currentPlaybackRate = 1.0;
 
+// Lives: survive fatal mistakes by auto-consuming a life; heal every COMBO_PER_LIFE combo
+const INITIAL_LIVES = 5;
+const COMBO_PER_LIFE = 50;
+
 function getServerSongTime() {
     return ((Date.now() - gameStartTime) / 1000) * currentPlaybackRate;
+}
+
+function grantComboLifeIfNeeded(p) {
+    if (!p || p.spectator) return;
+    // Heal when shared combo crosses a multiple of COMBO_PER_LIFE (no upper cap)
+    if (sharedCombo > 0 && sharedCombo % COMBO_PER_LIFE === 0) {
+        p.lives = (p.lives || 0) + 1;
+        broadcast({
+            type: 'lifeUpdate',
+            id: p.id,
+            lives: p.lives,
+            delta: 1,
+            reason: 'combo',
+            combo: sharedCombo
+        });
+    }
+}
+
+/**
+ * Consume one life to survive a fatal miss. Snaps player back onto the corridor.
+ * Returns true if the player survived (life remaining after consume), false if they die.
+ */
+function trySurviveWithLife(p, turnPoints, t, reason) {
+    if (!p || (p.lives || 0) <= 0) return false;
+
+    p.lives -= 1;
+    sharedCombo = 0;
+    p.combo = 0;
+
+    if (reason === 'missed_turn') {
+        // Auto-take the missed turn so play continues from that node
+        const nextTurn = turnPoints[p.turnIndex + 1];
+        if (nextTurn) {
+            p.turnIndex++;
+            p.currentDir = nextTurn.dir;
+            p.x = nextTurn.x;
+            p.y = nextTurn.y;
+            p.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
+            p.trail.push({ x: nextTurn.x, y: nextTurn.y });
+        }
+    } else {
+        // Wall crash: snap to last successful turn and resume along correct dir
+        const tp = turnPoints[p.turnIndex];
+        if (tp) {
+            p.x = tp.x;
+            p.y = tp.y;
+            p.currentDir = tp.dir;
+            p.anchor = { x: tp.x, y: tp.y, time: t };
+        }
+    }
+
+    broadcast({
+        type: 'lifeUpdate',
+        id: p.id,
+        lives: p.lives,
+        delta: -1,
+        reason,
+        turnIndex: p.turnIndex,
+        x: p.x,
+        y: p.y,
+        currentDir: p.currentDir,
+        anchor: p.anchor,
+        combo: 0
+    });
+    // Also surface as a MISS hit for judgment UX / combo break
+    broadcast({
+        type: 'hit',
+        id: p.id,
+        combo: 0,
+        score: p.score,
+        x: p.x,
+        y: p.y,
+        judgment: 'MISS',
+        turnIndex: p.turnIndex,
+        lives: p.lives,
+        lifeSaved: true
+    });
+    return true;
 }
 
 // Helper math for collision
@@ -654,6 +736,7 @@ wss.on('connection', (ws) => {
         maxCombo: 0,
         alive: !isSpectator,
         spectator: isSpectator,
+        lives: INITIAL_LIVES,
         x: 0,
         y: 0,
         currentDir: 0,
@@ -848,6 +931,8 @@ wss.on('connection', (ws) => {
                     p.alive = true;
                     p.score = 0;
                     p.combo = 0;
+                    p.maxCombo = 0;
+                    p.lives = INITIAL_LIVES;
                     p.x = pts[0].x;
                     p.y = pts[0].y;
                     p.currentDir = pts[0].dir;
@@ -862,7 +947,9 @@ wss.on('connection', (ws) => {
                     type: 'startGame',
                     startDelay,
                     segments: filteredSegments,
-                    playbackRate: currentPlaybackRate
+                    playbackRate: currentPlaybackRate,
+                    initialLives: INITIAL_LIVES,
+                    comboPerLife: COMBO_PER_LIFE
                 });
                 
                 if (gameInterval) clearInterval(gameInterval);
@@ -962,6 +1049,7 @@ wss.on('connection', (ws) => {
                     p.score += scoreAdd + (sharedCombo * 10);
                     p.combo = sharedCombo;
                     p.maxCombo = Math.max(p.maxCombo || 0, p.combo);
+                    grantComboLifeIfNeeded(p);
                     
                     broadcast({ 
                         type: 'hit', 
@@ -972,7 +1060,8 @@ wss.on('connection', (ws) => {
                         x: p.x, 
                         y: p.y, 
                         judgment,
-                        turnIndex: p.turnIndex
+                        turnIndex: p.turnIndex,
+                        lives: p.lives
                     });
                 } else {
                     const distToTurn = Math.hypot(p.x - nextTurn.x, p.y - nextTurn.y);
@@ -984,6 +1073,7 @@ wss.on('connection', (ws) => {
                         p.anchor = { x: p.x, y: p.y, time: nextTurn.time };
                         p.trail.push({ x: p.x, y: p.y });
                         sharedCombo = 0;
+                        p.combo = 0;
                         
                         // Snap turn but combo breaks: judge Fast if clicked early, Late if clicked late
                         const judgment = (diff < 0) ? "Fast" : "Late";
@@ -996,14 +1086,72 @@ wss.on('connection', (ws) => {
                             x: p.x, 
                             y: p.y, 
                             judgment,
-                            turnIndex: p.turnIndex
+                            turnIndex: p.turnIndex,
+                            lives: p.lives
                         });
                     } else {
-                        p.currentDir = newDir;
-                        p.anchor = { x: p.x, y: p.y, time: t };
-                        p.trail.push({ x: p.x, y: p.y });
+                        // Hard miss: consume a life if available and auto-clear the turn; otherwise die
                         sharedCombo = 0;
-                        broadcast({ type: 'hit', id, combo: 0, score: p.score, x: p.x, y: p.y, judgment: "MISS", turnIndex: p.turnIndex });
+                        p.combo = 0;
+                        if ((p.lives || 0) > 0) {
+                            p.lives -= 1;
+                            // Force the turn so the player stays on the track
+                            p.turnIndex++;
+                            p.currentDir = nextTurn.dir;
+                            p.x = nextTurn.x;
+                            p.y = nextTurn.y;
+                            p.anchor = { x: nextTurn.x, y: nextTurn.y, time: nextTurn.time };
+                            p.trail.push({ x: nextTurn.x, y: nextTurn.y });
+                            broadcast({
+                                type: 'lifeUpdate',
+                                id: p.id,
+                                lives: p.lives,
+                                delta: -1,
+                                reason: 'miss',
+                                turnIndex: p.turnIndex,
+                                x: p.x,
+                                y: p.y,
+                                currentDir: p.currentDir,
+                                anchor: p.anchor,
+                                combo: 0
+                            });
+                            broadcast({
+                                type: 'hit',
+                                id,
+                                combo: 0,
+                                score: p.score,
+                                x: p.x,
+                                y: p.y,
+                                judgment: 'MISS',
+                                turnIndex: p.turnIndex,
+                                lives: p.lives,
+                                lifeSaved: true
+                            });
+                        } else {
+                            p.currentDir = newDir;
+                            p.anchor = { x: p.x, y: p.y, time: t };
+                            p.trail.push({ x: p.x, y: p.y });
+                            broadcast({
+                                type: 'hit',
+                                id,
+                                combo: 0,
+                                score: p.score,
+                                x: p.x,
+                                y: p.y,
+                                judgment: 'MISS',
+                                turnIndex: p.turnIndex,
+                                lives: 0
+                            });
+                            // Immediate death when out of lives on hard miss
+                            p.alive = false;
+                            p.deathTime = t;
+                            broadcast({ type: 'playerDead', id });
+                            if (selectedSong) {
+                                const totalTime = turnPoints[turnPoints.length - 1].time || 1;
+                                const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                                recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                            }
+                        }
                     }
                 }
                 break;
@@ -1027,6 +1175,7 @@ wss.on('connection', (ws) => {
                             score: pl.score,
                             combo: pl.combo,
                             maxCombo: pl.maxCombo,
+                            lives: pl.lives,
                             finished: pl.finished,
                             spawnIndex: pl.spawnIndex,
                             color: pl.color
@@ -1100,23 +1249,27 @@ function updatePhysics() {
                 // Missed turn point
                 const nextTurn = turnPoints[p.turnIndex + 1];
                 const totalTime = turnPoints[turnPoints.length - 1].time;
-                      if (nextTurn && t > nextTurn.time + 0.45) {
-                    p.alive = false;
-                    p.deathTime = t;
-                    broadcast({ type: 'playerDead', id });
-                    
-                    const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                if (nextTurn && t > nextTurn.time + 0.45) {
+                    if (!trySurviveWithLife(p, turnPoints, t, 'missed_turn')) {
+                        p.alive = false;
+                        p.deathTime = t;
+                        broadcast({ type: 'playerDead', id });
+                        
+                        const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                        recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                    }
                 }
                 
                 // Wall crash (only if not finished yet)
                 if (p.alive && !p.finished && t > 0.5 && !isInsideCorridor(p.x, p.y, turnPoints, p.turnIndex)) {
-                    p.alive = false;
-                    p.deathTime = t;
-                    broadcast({ type: 'playerDead', id });
-                    
-                    const pct = Math.min(100, Math.floor((t / totalTime) * 100));
-                    recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                    if (!trySurviveWithLife(p, turnPoints, t, 'wall')) {
+                        p.alive = false;
+                        p.deathTime = t;
+                        broadcast({ type: 'playerDead', id });
+                        
+                        const pct = Math.min(100, Math.floor((t / totalTime) * 100));
+                        recordScore(selectedSong.id, selectedDifficulty, p.name, pct, p.score, p.maxCombo);
+                    }
                 }
                 
                 // Finished level
